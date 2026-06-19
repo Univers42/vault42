@@ -1,0 +1,12 @@
+# Keep the fly/docker build context lean: only source + manifests + contracts are
+# needed to build vault42-server. target/ is a docker volume locally (not on host) but
+# excluded for safety; git history, docs, and deploy meta are not build inputs.
+target/
+**/target/
+.git/
+.github/
+*.db
+*.db-wal
+*.db-shm
+wiki/
+.gitleaks.toml

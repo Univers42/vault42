@@ -1,0 +1,39 @@
+# fly.io deployment for vault42-server — the ONLY public surface. It serves gRPC over
+# HTTP/2 with TLS terminated at the fly edge. Sealed state (the opaque-envelope SQLite
+# file) lives on an encrypted fly volume at /data. Secrets (the optional grobase service
+# token, etc.) are set out-of-band via `fly secrets set` — never committed here.
+# This file is at the repo root so the Docker build context is the workspace root.
+# primary_region: Madrid (mad) is not offered to this account; cdg (Paris) is the
+# nearest EU region fly provides here and matches the org's other apps.
+app = "vault42"
+primary_region = "cdg"
+
+[build]
+  dockerfile = "deploy/Dockerfile"
+
+[env]
+  VAULT42_HOST = "0.0.0.0"
+  VAULT42_PORT = "8443"
+  VAULT42_DB = "/data/vault42.db"
+  VAULT42_AUTH_SKEW_SECS = "120"
+  RUST_LOG = "info"
+
+[[mounts]]
+  source = "vault42_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8443
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # gRPC needs HTTP/2 end to end: tell the fly proxy to speak h2c to the app (tonic is
+  # HTTP/2-only). Without this the proxy uses HTTP/1.1 to the backend and returns 502.
+  [http_service.http_options]
+    h2_backend = true
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

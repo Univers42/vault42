@@ -69,6 +69,10 @@ dirs = "5"
 # shared encodings (P5/P6)
 base64 = "0.22"
 uuid = { version = "1", features = ["v5"] }
+# SSH edge (P8) — hardened transport; auth only, no server-side plaintext
+russh = "0.45"
+russh-keys = "0.45"
+async-trait = "0.1"
 
 # Strip + thin-LTO the release binaries (mirrors the grobase data-plane profile).
 [profile.release]

@@ -18,13 +18,21 @@
 use vault42_core::{open_keystore, Identity};
 use zeroize::Zeroizing;
 
-/// Prompt once for an existing passphrase (no echo).
+/// Prompt once for an existing passphrase (no echo). `VAULT42_PASSPHRASE`, when set,
+/// supplies it non-interactively for automation/CI.
 pub fn prompt_passphrase() -> anyhow::Result<Zeroizing<String>> {
+    if let Ok(passphrase) = std::env::var("VAULT42_PASSPHRASE") {
+        return Ok(Zeroizing::new(passphrase));
+    }
     Ok(Zeroizing::new(rpassword::prompt_password("passphrase: ")?))
 }
 
-/// Prompt twice for a new passphrase and require them to match.
+/// Prompt twice for a new passphrase and require them to match. `VAULT42_PASSPHRASE`,
+/// when set, supplies it non-interactively (no confirmation prompt).
 pub fn prompt_new_passphrase() -> anyhow::Result<Zeroizing<String>> {
+    if let Ok(passphrase) = std::env::var("VAULT42_PASSPHRASE") {
+        return Ok(Zeroizing::new(passphrase));
+    }
     let first = rpassword::prompt_password("new passphrase: ")?;
     let second = rpassword::prompt_password("confirm passphrase: ")?;
     if first != second {
