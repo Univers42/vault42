@@ -15,7 +15,7 @@
 //! fetches the envelope and decrypts it locally — the server sees neither plaintext
 //! nor a DEK at any point.
 
-use crate::client::{attach_auth, Session};
+use crate::client::Session;
 use crate::{compose, decrypt, derive};
 use tonic::{Code, Request};
 use vault42_proto::vault::v1::{GetRequest, PushRequest};
@@ -41,7 +41,7 @@ impl Session {
             envelope,
             expected_prev_rev: current,
         });
-        attach_auth(&mut request, &self.identity, "/vault.v1.Vault/Push")?;
+        self.authorize(&mut request, "/vault.v1.Vault/Push")?;
         let version = self.client.push(request).await?.into_inner().version;
         println!("pushed {path} version {version}");
         Ok(())
@@ -54,7 +54,7 @@ impl Session {
             path: path.to_string(),
             version,
         });
-        attach_auth(&mut request, &self.identity, "/vault.v1.Vault/Get")?;
+        self.authorize(&mut request, "/vault.v1.Vault/Get")?;
         let resp = self.client.get(request).await?.into_inner();
         let plaintext = decrypt::open_envelope(&self.identity, &resp, &expected, version)?;
         use std::io::Write;
@@ -68,7 +68,7 @@ impl Session {
             path: path.to_string(),
             version: 0,
         });
-        attach_auth(&mut request, &self.identity, "/vault.v1.Vault/Get")?;
+        self.authorize(&mut request, "/vault.v1.Vault/Get")?;
         match self.client.get(request).await {
             Ok(resp) => Ok(resp.into_inner().version),
             Err(status) if status.code() == Code::NotFound => Ok(0),
@@ -86,7 +86,7 @@ impl Session {
             path: path.to_string(),
             version: 0,
         });
-        attach_auth(&mut request, &self.identity, "/vault.v1.Vault/Get")?;
+        self.authorize(&mut request, "/vault.v1.Vault/Get")?;
         let resp = self.client.get(request).await?.into_inner();
         decrypt::open_envelope(&self.identity, &resp, &expected, 0)
     }
@@ -110,7 +110,7 @@ impl Session {
             envelope,
             expected_prev_rev: current,
         });
-        attach_auth(&mut request, &self.identity, "/vault.v1.Vault/Rotate")?;
+        self.authorize(&mut request, "/vault.v1.Vault/Rotate")?;
         let version = self.client.rotate(request).await?.into_inner().version;
         println!("rotated {path} to version {version}");
         Ok(())

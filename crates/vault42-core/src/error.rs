@@ -57,6 +57,9 @@ pub enum Error {
     /// (De)serialization of an envelope or keystore blob failed (incl. size-limit).
     #[error("vault42-core: codec error")]
     Codec,
+    /// A signed contract token has passed its expiry.
+    #[error("vault42-core: contract expired")]
+    Expired,
 }
 
 /// The crate-wide result alias (kernel rule: `Result<T, E>` everywhere).

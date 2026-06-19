@@ -36,6 +36,13 @@ pub enum Command {
     },
     /// Print this identity's principal and shareable address.
     Whoami,
+    /// Register this identity with a contract authority and save the contract.
+    Register {
+        #[arg(long, env = "VAULT42_AUTHORITY")]
+        authority: String,
+        #[arg(long)]
+        tenant: String,
+    },
     /// Seal a secret (stdin or --file) and push it.
     Set {
         path: String,

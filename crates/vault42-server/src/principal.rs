@@ -24,14 +24,19 @@ pub struct Principal {
 }
 
 impl Principal {
-    /// Build a principal from a verified Ed25519 author public key. The tenant is
-    /// "self" for the standalone identity; a grobase tenant binding can replace it once
-    /// key-verification is wired into the auth path.
+    /// Build a principal from a verified Ed25519 author public key. The tenant defaults
+    /// to "self"; a verified contract replaces it with the registered tenant.
     pub fn from_pubkey(pubkey: [u8; 32]) -> Self {
         Self {
             id: hex::encode(vault42_core::fingerprint(&pubkey)),
             pubkey,
             tenant: "self".to_string(),
         }
+    }
+
+    /// Bind this principal to the tenant named in a verified contract.
+    pub fn with_tenant(mut self, tenant: String) -> Self {
+        self.tenant = tenant;
+        self
     }
 }

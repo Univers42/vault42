@@ -7,6 +7,7 @@ members = [
     "crates/vault42-server",
     "crates/vault42-cli",
     "crates/vault42-ssh",
+    "crates/vault42-contract",
     "crates/vault42-conformance",
 ]
 # vault42-conformance is a test-only battery (proptest + cargo-fuzz); it is NOT in
@@ -19,6 +20,7 @@ default-members = [
     "crates/vault42-server",
     "crates/vault42-cli",
     "crates/vault42-ssh",
+    "crates/vault42-contract",
 ]
 
 [workspace.package]
@@ -55,6 +57,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
 tokio-stream = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# HTTP server for the contract authority (the nano grobase peer)
+axum = "0.7"
 # storage substrate (P5) — embedded SQLite, statically bundled (scratch-image safe)
 rusqlite = { version = "0.32", features = ["bundled"] }
 r2d2 = "0.8"

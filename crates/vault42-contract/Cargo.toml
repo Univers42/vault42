@@ -1,0 +1,31 @@
+[package]
+name = "vault42-contract"
+description = "vault42 contract authority (the nano grobase peer) — registers tenants, issues signed contracts; idles after"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "vault42-contract"
+path = "src/main.rs"
+
+[dependencies]
+vault42-core = { path = "../vault42-core" }
+axum.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+r2d2.workspace = true
+r2d2_sqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }

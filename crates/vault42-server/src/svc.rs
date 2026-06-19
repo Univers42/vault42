@@ -28,15 +28,23 @@ pub struct VaultSvc {
     pub(crate) store: Store,
     pub(crate) skew_secs: i64,
     pub(crate) grobase: Option<Arc<GrobaseClient>>,
+    pub(crate) contract_pub: Option<[u8; 32]>,
 }
 
 impl VaultSvc {
-    /// Build the service from its injected dependencies.
-    pub fn new(store: Store, skew_secs: i64, grobase: Option<GrobaseClient>) -> Self {
+    /// Build the service from its injected dependencies. `contract_pub`, when set, makes
+    /// every request require a valid authority contract (managed multi-tenancy).
+    pub fn new(
+        store: Store,
+        skew_secs: i64,
+        grobase: Option<GrobaseClient>,
+        contract_pub: Option<[u8; 32]>,
+    ) -> Self {
         Self {
             store,
             skew_secs,
             grobase: grobase.map(Arc::new),
+            contract_pub,
         }
     }
 

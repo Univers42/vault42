@@ -14,15 +14,24 @@
 //! public key), and `x-v42-sig` (hex Ed25519 signature over `ts\n<grpc-method>`). The
 //! signature binds the operation and a fresh timestamp, so a captured header cannot be
 //! replayed onto a different method or past the skew window. The verified public key
-//! becomes the principal — proof of key possession, no password, no server secret.
+//! becomes the principal — proof of key possession, no password, no server secret. When
+//! a contract authority is configured (`contract_pub`), the caller must ALSO present a
+//! valid `x-v42-contract` bound to this key (managed multi-tenancy); the tenant comes
+//! from the contract. The contract is verified OFFLINE — no call back to the authority.
 
 use crate::principal::Principal;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{metadata::MetadataMap, Status};
 
 /// Authenticate a request's metadata for `method`, returning the caller principal.
-/// Any missing/malformed field or a bad signature is an `unauthenticated` status.
-pub fn authn(meta: &MetadataMap, method: &str, skew_secs: i64) -> Result<Principal, Status> {
+/// Any missing/malformed field, a bad signature, or (when required) a missing/invalid
+/// contract is an authentication denial.
+pub fn authn(
+    meta: &MetadataMap,
+    method: &str,
+    skew_secs: i64,
+    contract_pub: Option<&[u8; 32]>,
+) -> Result<Principal, Status> {
     let ts: i64 = meta_str(meta, "x-v42-ts")?
         .parse()
         .map_err(|_| Status::unauthenticated("bad timestamp"))?;
@@ -35,7 +44,33 @@ pub fn authn(meta: &MetadataMap, method: &str, skew_secs: i64) -> Result<Princip
     if !vault42_core::verify_request(&pubkey, challenge.as_bytes(), &sig) {
         return Err(Status::unauthenticated("bad request signature"));
     }
-    Ok(Principal::from_pubkey(pubkey))
+    match contract_pub {
+        Some(authority) => Ok(
+            Principal::from_pubkey(pubkey).with_tenant(bind_contract(meta, authority, &pubkey)?)
+        ),
+        None => Ok(Principal::from_pubkey(pubkey)),
+    }
+}
+
+/// Verify the `x-v42-contract` token against the authority key and bind it to `pubkey`,
+/// returning the contract's tenant. The contract must be signed by the authority, unexpired,
+/// and issued for this exact key's fingerprint.
+fn bind_contract(
+    meta: &MetadataMap,
+    authority: &[u8; 32],
+    pubkey: &[u8; 32],
+) -> Result<String, Status> {
+    let token = meta_str(meta, "x-v42-contract")?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let contract = vault42_core::verify_contract(authority, &token, now)
+        .map_err(|_| Status::unauthenticated("invalid or expired contract"))?;
+    if contract.author_fp != vault42_core::fingerprint(pubkey) {
+        return Err(Status::permission_denied("contract not bound to this key"));
+    }
+    Ok(contract.tenant)
 }
 
 /// Read a string metadata value or fail unauthenticated.

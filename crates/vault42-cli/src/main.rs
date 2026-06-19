@@ -19,6 +19,7 @@ mod address;
 mod cli;
 mod client;
 mod compose;
+mod contract_io;
 mod decrypt;
 mod derive;
 mod keystore_io;
@@ -26,6 +27,7 @@ mod passphrase;
 mod verbs_audit;
 mod verbs_init;
 mod verbs_manage;
+mod verbs_register;
 mod verbs_secret;
 mod verbs_share;
 
@@ -58,9 +60,13 @@ fn run() -> anyhow::Result<()> {
     runtime.block_on(dispatch(cli))
 }
 
-/// Unlock the keystore, open a session, and run the requested verb.
+/// Unlock the keystore, then run the requested verb. `register` talks only to the
+/// authority (no vault42 session); the rest open a signed session.
 async fn dispatch(cli: Cli) -> anyhow::Result<()> {
     let identity = passphrase::unlock()?;
+    if let Command::Register { authority, tenant } = &cli.command {
+        return verbs_register::cmd_register(&identity, authority, tenant).await;
+    }
     let mut session = Session::connect(&cli.server, identity).await?;
     match cli.command {
         Command::Whoami => session.cmd_whoami().await,
@@ -72,6 +78,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Command::Share { path, to } => session.cmd_share(&path, &to).await,
         Command::Audit { since } => session.cmd_audit(since).await,
         Command::Init { .. } => unreachable!("init handled before the runtime"),
+        Command::Register { .. } => unreachable!("register handled before the session"),
     }
 }
 

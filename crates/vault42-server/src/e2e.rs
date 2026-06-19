@@ -22,7 +22,8 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::{Channel, Server};
 use tonic::{Code, Request};
 use vault42_core::{
-    open, seal, AuthorPublicKey, Envelope, Identity, Metadata, ReadScope, Recipients,
+    issue_contract, open, seal, AuthorPublicKey, Contract, Envelope, Identity, Metadata, ReadScope,
+    Recipients,
 };
 use vault42_proto::vault::v1::vault_client::VaultClient;
 use vault42_proto::vault::v1::vault_server::VaultServer;
@@ -43,7 +44,7 @@ async fn spawn(store: Store) -> std::net::SocketAddr {
         .await
         .expect("bind");
     let addr = listener.local_addr().expect("addr");
-    let svc = VaultSvc::new(store, 120, None);
+    let svc = VaultSvc::new(store, 120, None, None);
     tokio::spawn(async move {
         Server::builder()
             .add_service(VaultServer::new(svc))
@@ -52,6 +53,31 @@ async fn spawn(store: Store) -> std::net::SocketAddr {
             .expect("serve");
     });
     addr
+}
+
+/// Serve a CONTRACT-GATED vault (managed multi-tenancy) on an ephemeral port.
+async fn spawn_gated(store: Store, authority_pub: [u8; 32]) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let svc = VaultSvc::new(store, 120, None, Some(authority_pub));
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(VaultServer::new(svc))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .expect("serve");
+    });
+    addr
+}
+
+/// Attach a contract token to a signed request.
+fn with_contract<T>(mut request: Request<T>, contract: &str) -> Request<T> {
+    request
+        .metadata_mut()
+        .insert("x-v42-contract", contract.parse().expect("contract"));
+    request
 }
 
 /// A lazily-connecting client to `addr`.
@@ -562,4 +588,96 @@ async fn edge_paths_and_payloads_round_trip() {
             "roundtrip failed for path {path}"
         );
     }
+}
+
+#[tokio::test]
+async fn contract_gate_accepts_valid_and_rejects_the_rest() {
+    let authority = Identity::generate();
+    let addr = spawn_gated(
+        fresh_store("contract"),
+        authority.author_public().to_bytes(),
+    )
+    .await;
+    let mut c = client(addr);
+    let user = Identity::generate();
+    let owner = principal_of(&user);
+    let fp = vault42_core::fingerprint(&user.author_public().to_bytes());
+    let issue = |author_fp, from: i64, to: i64| {
+        issue_contract(
+            authority.signing_key(),
+            &Contract {
+                version: 1,
+                tenant: "acme".into(),
+                author_fp,
+                issued_at: now() + from,
+                expires_at: now() + to,
+            },
+        )
+        .expect("issue")
+    };
+    let env = seal_for(&user, &owner, "p", 1, b"data");
+
+    // valid contract → accepted
+    let ok = with_contract(
+        signed(
+            PushRequest {
+                path: "p".into(),
+                envelope: env.clone(),
+                expected_prev_rev: 0,
+            },
+            &user,
+            "/vault.v1.Vault/Push",
+        ),
+        &issue(fp, -10, 3600),
+    );
+    assert!(c.push(ok).await.is_ok());
+
+    // no contract → unauthenticated
+    let bare = signed(
+        GetRequest {
+            path: "p".into(),
+            version: 0,
+        },
+        &user,
+        "/vault.v1.Vault/Get",
+    );
+    assert_eq!(
+        c.get(bare).await.expect_err("no contract").code(),
+        Code::Unauthenticated
+    );
+
+    // contract bound to a DIFFERENT key → permission denied
+    let other_fp = vault42_core::fingerprint(&Identity::generate().author_public().to_bytes());
+    let wrong = with_contract(
+        signed(
+            GetRequest {
+                path: "p".into(),
+                version: 0,
+            },
+            &user,
+            "/vault.v1.Vault/Get",
+        ),
+        &issue(other_fp, -10, 3600),
+    );
+    assert_eq!(
+        c.get(wrong).await.expect_err("wrong key").code(),
+        Code::PermissionDenied
+    );
+
+    // expired contract → unauthenticated
+    let stale = with_contract(
+        signed(
+            GetRequest {
+                path: "p".into(),
+                version: 0,
+            },
+            &user,
+            "/vault.v1.Vault/Get",
+        ),
+        &issue(fp, -7200, -3600),
+    );
+    assert_eq!(
+        c.get(stale).await.expect_err("expired").code(),
+        Code::Unauthenticated
+    );
 }

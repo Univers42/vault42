@@ -37,7 +37,12 @@ impl Vault for VaultSvc {
     type AuditStream = crate::audit_rpc::AuditStream;
 
     async fn push(&self, request: Request<PushRequest>) -> Result<Response<PushResponse>, Status> {
-        let caller = authn(request.metadata(), "/vault.v1.Vault/Push", self.skew_secs)?;
+        let caller = authn(
+            request.metadata(),
+            "/vault.v1.Vault/Push",
+            self.skew_secs,
+            self.contract_pub.as_ref(),
+        )?;
         let r = request.into_inner();
         let op = WriteOp {
             caller: &caller,
@@ -50,7 +55,12 @@ impl Vault for VaultSvc {
     }
 
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
-        let caller = authn(request.metadata(), "/vault.v1.Vault/Get", self.skew_secs)?;
+        let caller = authn(
+            request.metadata(),
+            "/vault.v1.Vault/Get",
+            self.skew_secs,
+            self.contract_pub.as_ref(),
+        )?;
         let r = request.into_inner();
         self.op_get(&caller, &r.path, r.version)
             .await
@@ -61,7 +71,12 @@ impl Vault for VaultSvc {
         &self,
         request: Request<GetRequest>,
     ) -> Result<Response<Self::FetchStream>, Status> {
-        let caller = authn(request.metadata(), "/vault.v1.Vault/Fetch", self.skew_secs)?;
+        let caller = authn(
+            request.metadata(),
+            "/vault.v1.Vault/Fetch",
+            self.skew_secs,
+            self.contract_pub.as_ref(),
+        )?;
         let r = request.into_inner();
         let resp = self.op_get(&caller, &r.path, r.version).await?;
         let chunk = Ok(Chunk {
@@ -71,7 +86,12 @@ impl Vault for VaultSvc {
     }
 
     async fn ls(&self, request: Request<LsRequest>) -> Result<Response<LsResponse>, Status> {
-        let caller = authn(request.metadata(), "/vault.v1.Vault/Ls", self.skew_secs)?;
+        let caller = authn(
+            request.metadata(),
+            "/vault.v1.Vault/Ls",
+            self.skew_secs,
+            self.contract_pub.as_ref(),
+        )?;
         self.op_ls(&caller, &request.into_inner().prefix)
             .await
             .map(Response::new)
@@ -81,7 +101,12 @@ impl Vault for VaultSvc {
         &self,
         request: Request<ShareRequest>,
     ) -> Result<Response<PushResponse>, Status> {
-        let caller = authn(request.metadata(), "/vault.v1.Vault/Share", self.skew_secs)?;
+        let caller = authn(
+            request.metadata(),
+            "/vault.v1.Vault/Share",
+            self.skew_secs,
+            self.contract_pub.as_ref(),
+        )?;
         let r = request.into_inner();
         let op = WriteOp {
             caller: &caller,
@@ -94,7 +119,12 @@ impl Vault for VaultSvc {
     }
 
     async fn rm(&self, request: Request<RmRequest>) -> Result<Response<RmResponse>, Status> {
-        let caller = authn(request.metadata(), "/vault.v1.Vault/Rm", self.skew_secs)?;
+        let caller = authn(
+            request.metadata(),
+            "/vault.v1.Vault/Rm",
+            self.skew_secs,
+            self.contract_pub.as_ref(),
+        )?;
         let r = request.into_inner();
         self.op_rm(&caller, &r.path, r.version)
             .await
@@ -105,7 +135,12 @@ impl Vault for VaultSvc {
         &self,
         request: Request<PushRequest>,
     ) -> Result<Response<PushResponse>, Status> {
-        let caller = authn(request.metadata(), "/vault.v1.Vault/Rotate", self.skew_secs)?;
+        let caller = authn(
+            request.metadata(),
+            "/vault.v1.Vault/Rotate",
+            self.skew_secs,
+            self.contract_pub.as_ref(),
+        )?;
         let r = request.into_inner();
         let op = WriteOp {
             caller: &caller,
@@ -125,6 +160,7 @@ impl Vault for VaultSvc {
             request.metadata(),
             "/vault.v1.Vault/RotateKeys",
             self.skew_secs,
+            self.contract_pub.as_ref(),
         )?;
         let rewrapped = self
             .op_rotate_keys(&caller, request.into_inner().items)
@@ -136,7 +172,12 @@ impl Vault for VaultSvc {
         &self,
         request: Request<AuditRequest>,
     ) -> Result<Response<Self::AuditStream>, Status> {
-        let caller = authn(request.metadata(), "/vault.v1.Vault/Audit", self.skew_secs)?;
+        let caller = authn(
+            request.metadata(),
+            "/vault.v1.Vault/Audit",
+            self.skew_secs,
+            self.contract_pub.as_ref(),
+        )?;
         self.op_audit(&caller, request.into_inner().since)
             .await
             .map(Response::new)
@@ -146,7 +187,12 @@ impl Vault for VaultSvc {
         &self,
         request: Request<UnsealRequest>,
     ) -> Result<Response<UnsealResponse>, Status> {
-        authn(request.metadata(), "/vault.v1.Vault/Unseal", self.skew_secs)?;
+        authn(
+            request.metadata(),
+            "/vault.v1.Vault/Unseal",
+            self.skew_secs,
+            self.contract_pub.as_ref(),
+        )?;
         Ok(Response::new(UnsealResponse {
             state: unseal_response::State::Unsealed as i32,
             progress: 100,
@@ -157,7 +203,12 @@ impl Vault for VaultSvc {
         &self,
         request: Request<WhoamiRequest>,
     ) -> Result<Response<WhoamiResponse>, Status> {
-        let caller = authn(request.metadata(), "/vault.v1.Vault/Whoami", self.skew_secs)?;
+        let caller = authn(
+            request.metadata(),
+            "/vault.v1.Vault/Whoami",
+            self.skew_secs,
+            self.contract_pub.as_ref(),
+        )?;
         Ok(Response::new(self.op_whoami(&caller)))
     }
 }

@@ -75,7 +75,7 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
         Some(grobase_cfg) => Some(connect_grobase(grobase_cfg)?),
         None => None,
     };
-    let svc = VaultSvc::new(store, cfg.skew_secs, grobase);
+    let svc = VaultSvc::new(store, cfg.skew_secs, grobase, cfg.contract_pub);
     let addr = cfg.bind.parse()?;
     tracing::info!(%addr, "vault42-server listening");
     tonic::transport::Server::builder()

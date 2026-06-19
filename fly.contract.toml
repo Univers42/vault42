@@ -1,0 +1,37 @@
+# fly.io deployment for the vault42-contract authority (the nano grobase peer). HTTP/JSON
+# (plain HTTP/1.1 to the backend — no gRPC), TLS at the fly edge, scale-to-zero so it
+# costs only its tiny volume when idle. Registry + signing key persist on the volume.
+app = "grobase-nano"
+primary_region = "cdg"
+
+[build]
+  dockerfile = "deploy/Dockerfile.contract"
+
+[env]
+  VAULT42_CONTRACT_HOST = "0.0.0.0"
+  VAULT42_CONTRACT_PORT = "8443"
+  VAULT42_CONTRACT_DB = "/data/contract.db"
+  VAULT42_CONTRACT_KEY = "/data/contract.key"
+  RUST_LOG = "info"
+
+[[mounts]]
+  source = "grobase_nano_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8443
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "get"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

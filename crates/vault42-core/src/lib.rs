@@ -27,6 +27,7 @@
 
 mod aad;
 mod aead;
+mod contract;
 mod envelope;
 mod error;
 mod identity;
@@ -40,6 +41,7 @@ mod request;
 mod seal;
 mod sign;
 
+pub use contract::{issue_contract, verify_contract, Contract};
 pub use envelope::Envelope;
 pub use error::{Error, Result};
 pub use identity::Identity;

@@ -27,6 +27,7 @@ pub struct Config {
     pub db_path: String,
     pub skew_secs: i64,
     pub grobase: Option<GrobaseCfg>,
+    pub contract_pub: Option<[u8; 32]>,
 }
 
 impl Config {
@@ -39,6 +40,7 @@ impl Config {
             db_path: env("VAULT42_DB", "/data/vault42.db"),
             skew_secs: env("VAULT42_AUTH_SKEW_SECS", "120").parse().unwrap_or(120),
             grobase: grobase_cfg(),
+            contract_pub: contract_pub(),
         }
     }
 }
@@ -46,6 +48,15 @@ impl Config {
 /// Read an environment variable with a default.
 fn env(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Parse the authority contract public key (hex, 32 bytes) from
+/// `VAULT42_CONTRACT_PUBKEY`. When set, the server requires a valid contract per request
+/// (managed multi-tenancy); when absent, it runs standalone (tenant "self").
+fn contract_pub() -> Option<[u8; 32]> {
+    let hex_key = std::env::var("VAULT42_CONTRACT_PUBKEY").ok()?;
+    let bytes = hex::decode(hex_key.trim()).ok()?;
+    bytes.as_slice().try_into().ok()
 }
 
 /// Build the grobase config iff both the URL and the service token are present.

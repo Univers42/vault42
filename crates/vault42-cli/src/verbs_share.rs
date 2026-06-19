@@ -17,7 +17,7 @@
 //! The friend reads it there with their own key. Re-sealing (not key-sharing) keeps it
 //! zero-knowledge.
 
-use crate::client::{attach_auth, Session};
+use crate::client::Session;
 use crate::{address, compose};
 use tonic::Request;
 use vault42_proto::vault::v1::ShareRequest;
@@ -41,7 +41,7 @@ impl Session {
             envelope,
             expected_prev_rev: 0,
         });
-        attach_auth(&mut request, &self.identity, "/vault.v1.Vault/Share")?;
+        self.authorize(&mut request, "/vault.v1.Vault/Share")?;
         self.client.share(request).await?;
         println!("shared {path} to {} at {shared_path}", address::short(to));
         Ok(())
