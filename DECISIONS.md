@@ -135,3 +135,14 @@ Transit) wrapping the row at rest, master seed in a fly secret, auto-unseal at b
 Firecracker microVM + encrypted volumes + 6PN. A breach must pass all three; L1 wins even if L2/L3
 fall. The recovery Transit key (D5) is **separate** from the row-CMEK key so crypto-shredding one
 does not kill the other.
+
+## D12 — 42ctl supersedes vault42-cli (umbrella platform CLI)
+
+`42ctl` (its own org repo `Univers42/42ctl`) becomes the front-door CLI for the whole stack;
+the vault verbs become its `42ctl vault`/`secrets` group, `unseal` becomes `42ctl unseal`. The
+existing `vault42-cli` (shipped in v0.1.1, deployed + proven) is **kept but superseded** — not
+deleted (deletion-gate discipline); it remains a thin reference client. The crypto core
+(`vault42-core`) is the future standalone **`vault-crypto`** crate; until it is published to
+crates.io (a gated, irreversible step), `42ctl` depends on it — and on `vault42-proto` (the
+contract client) — via **pinned git dependencies** at tag `v0.1.1`, never a copy. Full 42ctl
+reconciliation + decisions live in that repo's `DECISIONS.md`.
