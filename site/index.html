@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>vault42 — zero-knowledge secrets vault</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 16px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+         background: #0b0f14; color: #d7e0ea; }
+  main { max-width: 760px; margin: 0 auto; padding: 3rem 1.2rem 5rem; }
+  h1 { font-size: 2rem; margin: 0 0 .2rem; color: #7fd1ff; }
+  h2 { font-size: 1.1rem; margin: 2.2rem 0 .6rem; color: #9ad1a6; }
+  p, li { color: #b9c4d0; }
+  code, pre { background: #131a23; border: 1px solid #1f2a36; border-radius: 6px; }
+  code { padding: .1rem .35rem; }
+  pre { padding: .9rem 1rem; overflow-x: auto; color: #e6edf3; }
+  .lead { color: #9aa7b4; }
+  label { display: block; margin: .8rem 0 .25rem; color: #9ad1a6; }
+  input { width: 100%; box-sizing: border-box; padding: .6rem .7rem; font: inherit;
+          background: #0e141b; color: #e6edf3; border: 1px solid #243140; border-radius: 6px; }
+  .muted { color: #6b7785; font-size: .85rem; }
+  a { color: #7fd1ff; }
+  .badge { display:inline-block; background:#10241a; color:#9ad1a6; border:1px solid #1f3b2a;
+           border-radius:999px; padding:.1rem .6rem; font-size:.8rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>vault42</h1>
+  <p class="lead">A self-hostable, <strong>zero-knowledge</strong> secrets vault. The server
+  stores only ciphertext it can never read — all encryption happens on your machine.
+  <span class="badge">multi-tenant</span> <span class="badge">~free</span></p>
+
+  <h2>How it works</h2>
+  <ul>
+    <li><strong>vault42</strong> — the data plane. Stores opaque encrypted envelopes,
+      owner-scoped to your key. It never sees a plaintext or a decryption key.</li>
+    <li><strong>grobase-nano</strong> — the contract authority. You register once and it
+      signs a <em>contract</em> binding your key to a tenant. It then idles (scale-to-zero),
+      so the duo costs almost nothing.</li>
+    <li>Your keys live only in your local keystore. Registration sends only your
+      <em>public</em> key. Sharing re-seals for a friend's key — still zero-knowledge.</li>
+  </ul>
+
+  <h2>1 — install &amp; create an identity</h2>
+  <pre>cargo install --git https://github.com/Univers42/vault42 vault42-cli
+vault42 init                      # generates your local keystore</pre>
+
+  <h2>2 — register yourself</h2>
+  <p>Pick a tenant name and paste your invite token; this page builds the command —
+  run it locally so your key stays on your machine.</p>
+  <label for="tenant">Tenant name</label>
+  <input id="tenant" placeholder="alice" autocomplete="off" />
+  <label for="token">Invite token</label>
+  <input id="token" placeholder="(from the operator)" autocomplete="off" />
+  <label>Command to run</label>
+  <pre id="cmd">vault42 register --authority https://grobase-nano.fly.dev --tenant alice --token …</pre>
+  <p class="muted">Then your contract is saved locally and attached to every request.</p>
+
+  <h2>3 — use your vault</h2>
+  <pre>export VAULT42_SERVER=https://vault42.fly.dev
+printf 'sk-live-…' | vault42 set prod/stripe   # sealed locally, stored opaque
+vault42 get prod/stripe                         # decrypted locally
+vault42 ls ; vault42 rotate prod/stripe ; vault42 share prod/stripe --to &lt;address&gt;</pre>
+
+  <p class="muted">Source &amp; security model:
+    <a href="https://github.com/Univers42/vault42">github.com/Univers42/vault42</a></p>
+</main>
+<script>
+  const out = document.getElementById("cmd");
+  const tenant = document.getElementById("tenant");
+  const token = document.getElementById("token");
+  function render() {
+    const t = (tenant.value || "alice").replace(/[^A-Za-z0-9_-]/g, "");
+    const k = token.value ? token.value.replace(/[^A-Za-z0-9_-]/g, "") : "<TOKEN>";
+    out.textContent =
+      "vault42 register --authority https://grobase-nano.fly.dev --tenant " + t + " --token " + k;
+  }
+  tenant.addEventListener("input", render);
+  token.addEventListener("input", render);
+  render();
+</script>
+</body>
+</html>
