@@ -1,3 +1,15 @@
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                          :::      :::::::: */
+/*   sign.rs                                              :+:      :+:    :+: */
+/*                                                        +:+ +:+         +:+ */
+/*   By: dlesieur <dev.pro.photo@gmail.com>                +#+  +:+       +#+ */
+/*                                                          +#+#+#+#+#+   +#+ */
+/*   Created: 2026/06/19 00:00:00 by dlesieur                      #+#    #+# */
+/*   Updated: 2026/06/19 00:00:00 by dlesieur               ###   ########.fr */
+/*                                                                            */
+/* ************************************************************************** */
+
 //! Ed25519 author signatures. The author signs over the canonical AAD concatenated
 //! with `blake3(ciphertext)`, so one signature binds the metadata, the recipient
 //! set, and the exact ciphertext. A reader MUST verify the signature (and that the
@@ -21,8 +33,8 @@ pub fn sign(author: &SigningKey, aad: &[u8], ciphertext: &[u8]) -> [u8; 64] {
 }
 
 /// Verify the author signature with `verify_strict` (rejects malleable / weak-key
-/// signatures). Returns `Err(Signature)` on any mismatch — the caller does not
-/// decrypt on failure.
+/// signatures) — the pre-decrypt verification gate. Returns `Err(Signature)` on any
+/// mismatch; the caller does not decrypt on failure.
 pub fn verify(
     author: &VerifyingKey,
     aad: &[u8],
@@ -31,7 +43,7 @@ pub fn verify(
 ) -> Result<()> {
     let signature = Signature::from_bytes(signature);
     author
-        .verify_strict(&message(aad, ciphertext), &signature) // sec: strict pre-decrypt verification gate
+        .verify_strict(&message(aad, ciphertext), &signature)
         .map_err(|_| Error::Signature)
 }
 

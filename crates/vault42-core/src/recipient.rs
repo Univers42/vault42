@@ -1,7 +1,20 @@
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                          :::      :::::::: */
+/*   recipient.rs                                         :+:      :+:    :+: */
+/*                                                        +:+ +:+         +:+ */
+/*   By: dlesieur <dev.pro.photo@gmail.com>                +#+  +:+       +#+ */
+/*                                                          +#+#+#+#+#+   +#+ */
+/*   Created: 2026/06/19 00:00:00 by dlesieur                      #+#    #+# */
+/*   Updated: 2026/06/19 00:00:00 by dlesieur               ###   ########.fr */
+/*                                                                            */
+/* ************************************************************************** */
+
 //! Per-recipient DEK wrapping: a fresh ephemeral X25519 ECDH → HKDF-SHA256 → a
 //! one-time Key-Encryption-Key (KEK) that AEAD-wraps the DEK. This is age's design
 //! (a per-recipient stanza) without age's format (DECISIONS.md D6). Adding a
-//! recipient is a client-side metadata mutation; the server never sees a DEK.
+//! recipient is a client-side metadata mutation; the server never sees a DEK. All
+//! intermediate secrets (the ECDH output, the KEK, the DEK) are zeroized on drop.
 
 use crate::aead;
 use crate::error::{Error, Result};
@@ -67,12 +80,12 @@ fn derive_kek(
     Ok(kek)
 }
 
-/// Wrap `dek` for `recipient` using a fresh ephemeral key. The shared secret and
-/// the KEK are zeroized on drop; only the wrapped DEK is retained.
+/// Wrap `dek` for `recipient` using a fresh ephemeral key; only the wrapped DEK is
+/// retained (the shared secret and KEK zeroize on drop).
 pub fn wrap(dek: &[u8; 32], recipient: &PublicKey, kind: RecipientKind) -> Result<WrappedDek> {
     let ephemeral = StaticSecret::random();
     let ephemeral_pub = PublicKey::from(&ephemeral);
-    let shared = Zeroizing::new(*ephemeral.diffie_hellman(recipient).as_bytes()); // sec: ECDH secret zeroized on drop
+    let shared = Zeroizing::new(*ephemeral.diffie_hellman(recipient).as_bytes());
     let recipient_id = key_id(recipient.as_bytes());
     let kek = derive_kek(&shared, ephemeral_pub.as_bytes(), recipient.as_bytes())?;
     let mut wrap_nonce = [0u8; 24];
@@ -91,7 +104,7 @@ pub fn wrap(dek: &[u8; 32], recipient: &PublicKey, kind: RecipientKind) -> Resul
 /// zeroizing buffer. A non-recipient (wrong secret) fails the AEAD open.
 pub fn unwrap(w: &WrappedDek, recipient_secret: &StaticSecret) -> Result<Zeroizing<[u8; 32]>> {
     let ephemeral_pub = PublicKey::from(w.ephemeral_pub);
-    let shared = Zeroizing::new(*recipient_secret.diffie_hellman(&ephemeral_pub).as_bytes()); // sec: zeroized on drop
+    let shared = Zeroizing::new(*recipient_secret.diffie_hellman(&ephemeral_pub).as_bytes());
     let recipient_pub = PublicKey::from(recipient_secret).to_bytes();
     let kek = derive_kek(&shared, &w.ephemeral_pub, &recipient_pub)?;
     let opened = aead::decrypt(&kek, &w.wrap_nonce, &w.wrapped, &w.recipient_id)?;

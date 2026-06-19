@@ -1,3 +1,15 @@
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                          :::      :::::::: */
+/*   aead.rs                                              :+:      :+:    :+: */
+/*                                                        +:+ +:+         +:+ */
+/*   By: dlesieur <dev.pro.photo@gmail.com>                +#+  +:+       +#+ */
+/*                                                          +#+#+#+#+#+   +#+ */
+/*   Created: 2026/06/19 00:00:00 by dlesieur                      #+#    #+# */
+/*   Updated: 2026/06/19 00:00:00 by dlesieur               ###   ########.fr */
+/*                                                                            */
+/* ************************************************************************** */
+
 //! Authenticated encryption over a Data-Encryption-Key (DEK), via
 //! XChaCha20-Poly1305. The 192-bit (24-byte) nonce makes random nonces
 //! collision-safe by construction, so callers may always pick a fresh random

@@ -1,3 +1,15 @@
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                          :::      :::::::: */
+/*   error.rs                                             :+:      :+:    :+: */
+/*                                                        +:+ +:+         +:+ */
+/*   By: dlesieur <dev.pro.photo@gmail.com>                +#+  +:+       +#+ */
+/*                                                          +#+#+#+#+#+   +#+ */
+/*   Created: 2026/06/19 00:00:00 by dlesieur                      #+#    #+# */
+/*   Updated: 2026/06/19 00:00:00 by dlesieur               ###   ########.fr */
+/*                                                                            */
+/* ************************************************************************** */
+
 //! Errors raised by the crypto core. Every fallible primitive returns one of
 //! these — never a panic, never plaintext or key bytes in the message (kernel
 //! rule: plaintext/keys are radioactive; error strings are safe to log).

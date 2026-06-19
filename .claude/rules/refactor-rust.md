@@ -7,7 +7,7 @@ description: Rust refactoring rules
 
 ## Idioms
 
-- Max 40 lines per function
+- Max 25 lines per function
 - Use Result<T, E> everywhere, no unwrap() outside tests
 - Prefer &str over String in function parameters
 - Derive only what you use

@@ -1,10 +1,22 @@
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                          :::      :::::::: */
+/*   properties.rs                                        :+:      :+:    :+: */
+/*                                                        +:+ +:+         +:+ */
+/*   By: dlesieur <dev.pro.photo@gmail.com>                +#+  +:+       +#+ */
+/*                                                          +#+#+#+#+#+   +#+ */
+/*   Created: 2026/06/19 00:00:00 by dlesieur                      #+#    #+# */
+/*   Updated: 2026/06/19 00:00:00 by dlesieur               ###   ########.fr */
+/*                                                                            */
+/* ************************************************************************** */
+
 //! Property battery for the zero-knowledge envelope (the v01/v02 gate properties at
 //! the `proptest` level): for ALL plaintexts the roundtrip holds; ANY single-bit
 //! tamper of the ciphertext fails the open; and a non-recipient can NEVER open.
 //! Cheap key generation per case keeps the suite fast; 64 cases is enough signal.
 
 use proptest::prelude::*;
-use vault42_core::{open, seal, Identity, Metadata, ReadScope};
+use vault42_core::{open, seal, Identity, Metadata, ReadScope, Recipients};
 
 fn metadata(rev: u64) -> Metadata {
     Metadata {
@@ -32,8 +44,9 @@ proptest! {
     fn roundtrip_recovers_any_plaintext(plaintext in proptest::collection::vec(any::<u8>(), 0..4096)) {
         let alice = Identity::generate();
         let author = Identity::generate();
-        let env = seal(&plaintext, metadata(1), &[alice.encryption_public()], author.signing_key(), None)
-            .expect("seal");
+        let users = [alice.encryption_public()];
+        let recipients = Recipients { users: &users, recovery: None };
+        let env = seal(&plaintext, metadata(1), &recipients, author.signing_key()).expect("seal");
         let pt = open(&env, alice.encryption_secret(), &author.author_public(), &scope()).expect("open");
         prop_assert_eq!(&pt[..], &plaintext[..]);
     }
@@ -45,8 +58,9 @@ proptest! {
     ) {
         let alice = Identity::generate();
         let author = Identity::generate();
-        let mut env = seal(&plaintext, metadata(1), &[alice.encryption_public()], author.signing_key(), None)
-            .expect("seal");
+        let users = [alice.encryption_public()];
+        let recipients = Recipients { users: &users, recovery: None };
+        let mut env = seal(&plaintext, metadata(1), &recipients, author.signing_key()).expect("seal");
         let index = (bit as usize) % env.ciphertext.len();
         env.ciphertext[index] ^= 1 << (bit % 8);
         prop_assert!(open(&env, alice.encryption_secret(), &author.author_public(), &scope()).is_err());
@@ -57,8 +71,9 @@ proptest! {
         let alice = Identity::generate();
         let bob = Identity::generate();
         let author = Identity::generate();
-        let env = seal(&plaintext, metadata(1), &[alice.encryption_public()], author.signing_key(), None)
-            .expect("seal");
+        let users = [alice.encryption_public()];
+        let recipients = Recipients { users: &users, recovery: None };
+        let env = seal(&plaintext, metadata(1), &recipients, author.signing_key()).expect("seal");
         prop_assert!(open(&env, bob.encryption_secret(), &author.author_public(), &scope()).is_err());
     }
 }

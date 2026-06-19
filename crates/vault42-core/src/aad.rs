@@ -1,3 +1,15 @@
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                          :::      :::::::: */
+/*   aad.rs                                               :+:      :+:    :+: */
+/*                                                        +:+ +:+         +:+ */
+/*   By: dlesieur <dev.pro.photo@gmail.com>                +#+  +:+       +#+ */
+/*                                                          +#+#+#+#+#+   +#+ */
+/*   Created: 2026/06/19 00:00:00 by dlesieur                      #+#    #+# */
+/*   Updated: 2026/06/19 00:00:00 by dlesieur               ###   ########.fr */
+/*                                                                            */
+/* ************************************************************************** */
+
 //! The canonical Additional-Authenticated-Data (AAD) framing. This is the FROZEN,
 //! injective serialization the AEAD and the author signature are bound to —
 //! changing it changes every signature, so it must stay byte-stable forever
@@ -8,11 +20,11 @@
 //! the fields are in a FIXED positional order, and the recipient count is framed
 //! before the pairs. So no choice of values can produce the same byte stream as a
 //! different tuple: an attacker cannot shift bytes between owner/tenant/secret_id,
-//! add/remove/reorder a recipient, or relabel a recipient's kind (User↔Recovery)
-//! without changing the canonical bytes — and thus the signature. THREAT-MODEL R8.
-//! Callers MUST pass a de-duplicated recipient set (enforced in `envelope`).
+//! add/remove/reorder a recipient, or relabel its kind (User↔Recovery) without
+//! changing the canonical bytes — and thus the signature. Callers must pass a
+//! de-duplicated recipient set (enforced in `envelope`).
 
-use crate::envelope::Metadata;
+use crate::metadata::Metadata;
 
 /// Domain separator so AAD bytes can never collide with any other signed context.
 const DOMAIN: &[u8] = b"vault42/aad/v1";
@@ -27,7 +39,6 @@ fn frame(out: &mut Vec<u8>, value: &[u8]) {
 
 /// Build the canonical AAD: the domain tag, the metadata in a FIXED order, then the
 /// recipient set sorted by id and framed as `(id, kind)` pairs (count-prefixed).
-/// Binding `kind` means a relabeled wrap breaks the author signature.
 pub fn canonical(meta: &Metadata, recipients: &[([u8; 16], u8)]) -> Vec<u8> {
     let mut sorted = recipients.to_vec();
     sorted.sort_unstable_by_key(|pair| pair.0);
@@ -51,7 +62,7 @@ pub fn canonical(meta: &Metadata, recipients: &[([u8; 16], u8)]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::envelope::Metadata;
+    use crate::metadata::Metadata;
 
     fn meta() -> Metadata {
         Metadata {
@@ -66,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_and_order_independent_in_recipient_set() {
+    fn order_independent_in_recipient_set() {
         let a = canonical(&meta(), &[([1u8; 16], 0), ([2u8; 16], 1)]);
         let b = canonical(&meta(), &[([2u8; 16], 1), ([1u8; 16], 0)]);
         assert_eq!(a, b, "recipient order must not change the AAD (sorted set)");
@@ -91,11 +102,8 @@ mod tests {
 
     #[test]
     fn relabeling_kind_changes_aad() {
-        let as_user = canonical(&meta(), &[([1u8; 16], 0)]);
-        let as_recovery = canonical(&meta(), &[([1u8; 16], 1)]);
-        assert_ne!(
-            as_user, as_recovery,
-            "kind is bound: relabel must change the AAD"
-        );
+        let user = canonical(&meta(), &[([1u8; 16], 0)]);
+        let recovery = canonical(&meta(), &[([1u8; 16], 1)]);
+        assert_ne!(user, recovery, "kind is bound: relabel must change the AAD");
     }
 }

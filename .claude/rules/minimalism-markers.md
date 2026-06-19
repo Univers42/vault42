@@ -23,11 +23,6 @@ The performance counterpart is `// perf:` — it marks where performance overrod
 
 `// perf: O(n) manual loop over O(n²) stdlib — hot path, called per-request`
 
-The security counterpart (**vault42 extension**) is `// sec:` — it marks a line that
-upholds a security invariant in this zero-knowledge vault, so reviewers find them with one grep:
-
-`// sec: DEK zeroized on drop` · `// sec: verify before decrypt` · `// sec: bind response to requested scope`
-
 ## Documentation minimalism
 
 - Code first. Then at most three short comment lines — and those lines live in the
