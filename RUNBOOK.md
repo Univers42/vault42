@@ -17,12 +17,39 @@ operator-assisted recovery (D5), L2 CMEK at-rest (D8), and `recover`/`rotate-key
 ceremonies. The sections below marked *(designed)* describe the target, not current
 behaviour.
 
+## The deployed duo (managed multi-tenancy, ~free)
+
+Two scale-to-zero fly apps in `cdg` (D11), ~$0.30/mo total (volumes only):
+
+- **`grobase-nano`** → `https://grobase-nano.fly.dev` — the contract authority. People
+  self-register and get a signed contract; it idles after.
+- **`vault42`** → `https://vault42.fly.dev` — the zero-knowledge data plane, gated on a
+  valid contract (`VAULT42_CONTRACT_PUBKEY` = the authority's public key).
+
+End-to-end, a new user does:
+
+```sh
+export VAULT42_SERVER=https://vault42.fly.dev VAULT42_AUTHORITY=https://grobase-nano.fly.dev
+vault42 init                                   # local identity (Ed25519 + X25519)
+vault42 register --authority $VAULT42_AUTHORITY --tenant alice   # → saves a contract
+printf my-secret | vault42 set prod/db         # sealed locally, stored opaque, contract-gated
+vault42 get prod/db                            # decrypted locally
+```
+
+To wire the gate after deploying the authority: fetch its key and stage it on vault42.
+
+```sh
+KEY=$(curl -fsS https://grobase-nano.fly.dev/v1/contract-key | sed 's/.*"public_key":"//;s/".*//')
+$FLY secrets set VAULT42_CONTRACT_PUBKEY="$KEY" --stage -a vault42 && $FLY deploy -a vault42
+```
+
 ## Deploy (fly.io)
 
 The deployed app is **`vault42`** → `https://vault42.fly.dev` (region `cdg`; Madrid is not
 offered to this account — D10). TLS terminates at the fly edge and the proxy speaks h2c to
 the tonic server (`[http_service.http_options] h2_backend = true` — required for gRPC).
-Drive fly with the prebuilt image and the `FLY_TOKEN` (never printed/committed):
+Deploy the authority with `-c fly.contract.toml`. Drive fly with the prebuilt image and the
+`FLY_TOKEN` (never printed/committed):
 
 ```sh
 TOK=$(grep '^FLY_TOKEN=' ../../.env.local | cut -d= -f2- | tr -d '"')

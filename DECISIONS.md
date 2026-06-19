@@ -101,6 +101,33 @@ region it provides and matches the org's existing apps. Deployed app: `vault42` 
 `https://vault42.fly.dev` (TLS at the fly edge, plaintext h2c to the app), 12 MB
 distroless image, encrypted 1 GB volume `vault42_data` at `/data`.
 
+## D11 — Managed multi-tenancy via a nano contract authority (the deployed duo)
+
+The product is a **duo of two scale-to-zero fly apps**, costing ~$0.30/mo (volumes only):
+
+- **`grobase-nano`** (`vault42-contract`, the authority): a tiny axum HTTP service. A
+  person self-registers (`POST /v1/register {tenant, author_pubkey}`); it claims the
+  tenant name (SQLite registry) and returns an **Ed25519-signed contract** binding that
+  public key to the tenant for a TTL. It exposes `GET /v1/contract-key`. After issuing it
+  idles — it is **never on vault42's request path**.
+- **`vault42`** (the data plane): when `VAULT42_CONTRACT_PUBKEY` is set, every request
+  must carry a valid `x-v42-contract`; vault42 **verifies it OFFLINE** with the authority
+  public key (signature + expiry + author-fingerprint binding) — no call back to the
+  authority. So the authority bears ~zero resource and the consuming server does the
+  work, exactly as intended. The tenant comes from the contract; storage stays
+  owner-scoped by the Ed25519 fingerprint (one identity = one isolated vault).
+
+**Why a purpose-built nano authority, not grobase itself:** grobase's full stack
+(PG + Kong + Go control plane + …) cannot run on fly's free tier, and the contract role
+needs only "sign a claim + keep a tenant list" — a 5-MB SQLite binary. This *is* the
+"nano" the brief asked for; it is trivially swappable for real grobase later (vault42 only
+needs an authority public key + the `/v1/register` contract shape).
+
+**Security:** the contract is a signed, public credential (no secret in it). Registration
+sends only the public key. HTTPS at the fly edge on both apps. A per-owner **quota**
+(`VAULT42_MAX_SECRETS`, default off; prod 1000) guardrails the cross-owner share-spam DoS.
+Proven live: unregistered access denied; two tenants register and are isolated.
+
 ## D8 — L2/L3 defense in depth
 
 L1 = client zero-knowledge (the real guarantee). L2 = grobase CMEK envelope (AES-256-GCM + Vault
