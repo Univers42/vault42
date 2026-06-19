@@ -16,9 +16,8 @@
 //! nor a DEK at any point.
 
 use crate::client::{attach_auth, Session};
-use crate::{decrypt, derive};
+use crate::{compose, decrypt, derive};
 use tonic::{Code, Request};
-use vault42_core::{seal, Metadata, Recipients};
 use vault42_proto::vault::v1::{GetRequest, PushRequest};
 use zeroize::Zeroizing;
 
@@ -30,28 +29,16 @@ impl Session {
         plaintext: Zeroizing<Vec<u8>>,
     ) -> anyhow::Result<()> {
         let current = self.current_version(path).await?;
-        let metadata = Metadata {
-            version: 1,
-            secret_id: derive::secret_id(&self.principal, path),
-            tenant: "self".to_string(),
-            owner: self.principal.clone(),
-            rev: current + 1,
-            content_type: "opaque".to_string(),
-            recovery_optin: false,
-        };
-        let recipients = Recipients {
-            users: &[self.identity.encryption_public()],
-            recovery: None,
-        };
-        let envelope = seal(
+        let envelope = compose::self_envelope(
+            &self.identity,
+            &self.principal,
+            path,
+            current + 1,
             plaintext.as_slice(),
-            metadata,
-            &recipients,
-            self.identity.signing_key(),
         )?;
         let mut request = Request::new(PushRequest {
             path: path.to_string(),
-            envelope: envelope.to_bytes()?,
+            envelope,
             expected_prev_rev: current,
         });
         attach_auth(&mut request, &self.identity, "/vault.v1.Vault/Push")?;
@@ -111,28 +98,16 @@ impl Session {
             anyhow::bail!("no secret at {path} to rotate");
         }
         let plaintext = self.fetch_plaintext(path).await?;
-        let metadata = Metadata {
-            version: 1,
-            secret_id: derive::secret_id(&self.principal, path),
-            tenant: "self".to_string(),
-            owner: self.principal.clone(),
-            rev: current + 1,
-            content_type: "opaque".to_string(),
-            recovery_optin: false,
-        };
-        let recipients = Recipients {
-            users: &[self.identity.encryption_public()],
-            recovery: None,
-        };
-        let envelope = seal(
+        let envelope = compose::self_envelope(
+            &self.identity,
+            &self.principal,
+            path,
+            current + 1,
             plaintext.as_slice(),
-            metadata,
-            &recipients,
-            self.identity.signing_key(),
         )?;
         let mut request = Request::new(PushRequest {
             path: path.to_string(),
-            envelope: envelope.to_bytes()?,
+            envelope,
             expected_prev_rev: current,
         });
         attach_auth(&mut request, &self.identity, "/vault.v1.Vault/Rotate")?;

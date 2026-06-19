@@ -95,7 +95,8 @@ impl Vault for VaultSvc {
 
     async fn rm(&self, request: Request<RmRequest>) -> Result<Response<RmResponse>, Status> {
         let caller = authn(request.metadata(), "/vault.v1.Vault/Rm", self.skew_secs)?;
-        self.op_rm(&caller, &request.into_inner().path)
+        let r = request.into_inner();
+        self.op_rm(&caller, &r.path, r.version)
             .await
             .map(Response::new)
     }

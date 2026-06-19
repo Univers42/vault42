@@ -18,6 +18,7 @@
 mod address;
 mod cli;
 mod client;
+mod compose;
 mod decrypt;
 mod derive;
 mod keystore_io;

@@ -49,12 +49,14 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open (creating if needed) the store at `path` and apply the schema. WAL mode
-    /// keeps readers non-blocking against the single writer.
+    /// Open (creating if needed) the store at `path` and apply the schema. The pool is
+    /// capped at one connection so every read-then-write (version bump, audit-chain
+    /// link) is serialized and atomic — no fork, no lost audit event under concurrency.
     pub fn open(path: &str) -> anyhow::Result<Self> {
         let manager = SqliteConnectionManager::file(path)
             .with_init(|c| c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"));
-        let pool = Pool::new(manager)?;
+        // ponytail: single writer connection — shard by owner if write throughput matters
+        let pool = r2d2::Pool::builder().max_size(1).build(manager)?;
         let store = Self { pool };
         store.migrate()?;
         Ok(store)

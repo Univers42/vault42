@@ -26,7 +26,7 @@ use vault42_core::{
 };
 use vault42_proto::vault::v1::vault_client::VaultClient;
 use vault42_proto::vault::v1::vault_server::VaultServer;
-use vault42_proto::vault::v1::{GetRequest, PushRequest};
+use vault42_proto::vault::v1::{GetRequest, PushRequest, ShareRequest};
 
 /// A throwaway SQLite store on a per-test temp file (WAL sidecars cleaned best-effort).
 fn fresh_store(tag: &str) -> Store {
@@ -286,4 +286,94 @@ async fn stale_expected_prev_is_a_conflict() {
         .await
         .expect_err("stale write must be rejected");
     assert_eq!(err.code(), Code::FailedPrecondition);
+}
+
+#[tokio::test]
+async fn push_under_a_foreign_owner_is_denied() {
+    let addr = spawn(fresh_store("foreign")).await;
+    let mut c = client(addr);
+    let alice = Identity::generate();
+    let foreign_owner = "0".repeat(32);
+    let envelope = seal_for(&alice, &foreign_owner, "p", 1, b"inject");
+    let err = c
+        .push(signed(
+            PushRequest {
+                path: "p".into(),
+                envelope,
+                expected_prev_rev: 0,
+            },
+            &alice,
+            "/vault.v1.Vault/Push",
+        ))
+        .await
+        .expect_err("push into another owner's namespace must be denied");
+    assert_eq!(err.code(), Code::PermissionDenied);
+}
+
+#[tokio::test]
+async fn share_round_trips_to_a_friend() {
+    let addr = spawn(fresh_store("share")).await;
+    let mut c = client(addr);
+    let alice = Identity::generate();
+    let bob = Identity::generate();
+    let bob_owner = principal_of(&bob);
+    let shared_path = format!("shared/{}/note", principal_of(&alice));
+    let secret = b"shared-secret-99";
+    let meta = Metadata {
+        version: 1,
+        secret_id: sid(&bob_owner, &shared_path),
+        tenant: "self".into(),
+        owner: bob_owner.clone(),
+        rev: 1,
+        content_type: "opaque".into(),
+        recovery_optin: false,
+    };
+    let recipients = Recipients {
+        users: &[bob.encryption_public(), alice.encryption_public()],
+        recovery: None,
+    };
+    let envelope = seal(secret, meta, &recipients, alice.signing_key())
+        .expect("seal")
+        .to_bytes()
+        .expect("encode");
+    c.share(signed(
+        ShareRequest {
+            path: shared_path.clone(),
+            envelope,
+            expected_prev_rev: 0,
+        },
+        &alice,
+        "/vault.v1.Vault/Share",
+    ))
+    .await
+    .expect("alice shares to bob");
+
+    let resp = c
+        .get(signed(
+            GetRequest {
+                path: shared_path.clone(),
+                version: 0,
+            },
+            &bob,
+            "/vault.v1.Vault/Get",
+        ))
+        .await
+        .expect("bob reads the shared secret")
+        .into_inner();
+    let env = Envelope::from_bytes(&resp.envelope).expect("decode");
+    let mut author = [0u8; 32];
+    author.copy_from_slice(&resp.author_pubkey);
+    assert_eq!(vault42_core::fingerprint(&author), env.author_pubkey_id);
+    let scope = ReadScope {
+        secret_id: &sid(&bob_owner, &shared_path),
+        min_rev: 0,
+    };
+    let opened = open(
+        &env,
+        bob.encryption_secret(),
+        &AuthorPublicKey::from_bytes(&author).expect("author"),
+        &scope,
+    )
+    .expect("bob opens alice's shared secret");
+    assert_eq!(&opened[..], secret);
 }

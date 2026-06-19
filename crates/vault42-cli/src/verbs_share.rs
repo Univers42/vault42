@@ -12,47 +12,38 @@
 
 //! `share` — grant another identity read access by re-sealing the secret for their
 //! address. The sharer fetches and locally decrypts their own copy, then seals a fresh
-//! envelope addressed to the friend's X25519 key under the friend's owner space; the
-//! server stores the opaque result. Re-sealing (not key-sharing) keeps it zero-knowledge.
+//! envelope addressed to the friend's X25519 key under the friend's owner space, at a
+//! `shared/<sharer>/<path>` key so it can never collide with the friend's own secrets.
+//! The friend reads it there with their own key. Re-sealing (not key-sharing) keeps it
+//! zero-knowledge.
 
 use crate::client::{attach_auth, Session};
-use crate::{address, derive};
+use crate::{address, compose};
 use tonic::Request;
-use vault42_core::{seal, Metadata, Recipients};
 use vault42_proto::vault::v1::ShareRequest;
 
 impl Session {
-    /// Re-seal `path` for the identity at `to` and store it in their owner space.
+    /// Re-seal `path` for the identity at `to`, depositing it at `shared/<self>/<path>`
+    /// in the recipient's owner space.
     pub async fn cmd_share(&mut self, path: &str, to: &str) -> anyhow::Result<()> {
         let (friend_principal, friend_enc) = address::decode(to)?;
         let plaintext = self.fetch_plaintext(path).await?;
-        let metadata = Metadata {
-            version: 1,
-            secret_id: derive::secret_id(&friend_principal, path),
-            tenant: "self".to_string(),
-            owner: friend_principal,
-            rev: 1,
-            content_type: "opaque".to_string(),
-            recovery_optin: false,
-        };
-        let recipients = Recipients {
-            users: &[friend_enc, self.identity.encryption_public()],
-            recovery: None,
-        };
-        let envelope = seal(
+        let shared_path = format!("shared/{}/{}", self.principal, path);
+        let envelope = compose::shared_envelope(
+            &self.identity,
+            &friend_principal,
+            &shared_path,
+            friend_enc,
             plaintext.as_slice(),
-            metadata,
-            &recipients,
-            self.identity.signing_key(),
         )?;
         let mut request = Request::new(ShareRequest {
-            path: path.to_string(),
-            envelope: envelope.to_bytes()?,
+            path: shared_path.clone(),
+            envelope,
             expected_prev_rev: 0,
         });
         attach_auth(&mut request, &self.identity, "/vault.v1.Vault/Share")?;
         self.client.share(request).await?;
-        println!("shared {path} to {}", address::short(to));
+        println!("shared {path} to {} at {shared_path}", address::short(to));
         Ok(())
     }
 }

@@ -10,11 +10,12 @@
 /*                                                                            */
 /* ************************************************************************** */
 
-//! Write operations (push / share / rotate / rotate-keys / rm). The server verifies
-//! the envelope's author signature against the caller's key WITHOUT decrypting — so it
-//! stores only well-formed, caller-authored envelopes — then writes under the
-//! signature-bound owner. Sharing works by the author sealing for a friend and the row
-//! landing in the friend's owner space; the friend later reads it with their own key.
+//! Write operations (push / share / rotate / rotate-keys / rm). The server verifies the
+//! envelope's author signature against the caller's key WITHOUT decrypting — so it
+//! stores only well-formed, caller-authored envelopes. For push/rotate the signed owner
+//! MUST equal the caller (a principal cannot write into another's namespace); only
+//! `share` may target a foreign owner, and then the write is an unconditional append
+//! into that recipient's space — the friend later reads it with their own key.
 
 use crate::principal::Principal;
 use crate::secret_write::PutSecret;
@@ -35,12 +36,20 @@ pub struct WriteOp<'a> {
 }
 
 impl VaultSvc {
-    /// Store an authored envelope at `expected_prev + 1` under its signed owner.
+    /// Store a caller-authored envelope. push/rotate require the signed owner to equal
+    /// the caller and use optimistic concurrency; share targets a foreign owner and
+    /// appends unconditionally.
     pub(crate) async fn op_write(&self, op: WriteOp<'_>) -> Result<PushResponse, Status> {
         let env = Envelope::from_bytes(op.envelope)
             .map_err(|_| Status::invalid_argument("malformed envelope"))?;
         verify_envelope_author(&env, &op.caller.pubkey)
             .map_err(|_| Status::permission_denied("envelope not authored by caller"))?;
+        let is_share = op.action == "share";
+        if !is_share && env.metadata.owner != op.caller.id {
+            return Err(Status::permission_denied(
+                "envelope owner must be the caller",
+            ));
+        }
         let owner = env.metadata.owner.clone();
         let secret_id = env.metadata.secret_id.clone();
         let version = self
@@ -49,7 +58,7 @@ impl VaultSvc {
                 owner: owner.clone(),
                 path: op.path.to_string(),
                 secret_id: secret_id.clone(),
-                expected_prev: op.expected_prev,
+                expected_prev: (!is_share).then_some(op.expected_prev),
                 envelope: op.envelope.to_vec(),
                 author_pubkey: op.caller.pubkey.to_vec(),
             })
@@ -84,11 +93,16 @@ impl VaultSvc {
         Ok(rewrapped)
     }
 
-    /// Delete every version of `path` for the caller.
-    pub(crate) async fn op_rm(&self, caller: &Principal, path: &str) -> Result<RmResponse, Status> {
+    /// Delete `path` for the caller: all versions when `version == 0`, else just one.
+    pub(crate) async fn op_rm(
+        &self,
+        caller: &Principal,
+        path: &str,
+        version: u64,
+    ) -> Result<RmResponse, Status> {
         let removed = self
             .store
-            .remove_secret(&caller.id, path)
+            .remove_secret(&caller.id, path, version as i64)
             .await
             .map_err(map_store)?;
         self.emit_audit(caller, "rm", path).await;

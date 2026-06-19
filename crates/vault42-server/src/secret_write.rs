@@ -12,26 +12,28 @@
 
 //! Owner-scoped writes. A push appends a new monotonic version only if the caller's
 //! `expected_prev` matches the stored head (optimistic concurrency — a stale writer is
-//! rejected, not silently overwritten). The envelope is opaque bytes; the server never
-//! inspects plaintext.
+//! rejected, not silently overwritten). A share has no head the sharer can observe in
+//! the recipient's space, so it passes `expected_prev = None` to append unconditionally.
+//! The envelope is opaque bytes; the server never inspects plaintext. Writes are
+//! serialized by the single-connection pool, so the read-then-insert is atomic.
 
 use crate::store::{now_unix, Store, StoreError};
 use rusqlite::params;
 
 /// A versioned write: the opaque envelope, its owner/path/secret-id, the expected
-/// previous version, and the author public-key sidecar.
+/// previous version (`None` ⇒ unconditional append, for share), and the author key.
 pub struct PutSecret {
     pub owner: String,
     pub path: String,
     pub secret_id: String,
-    pub expected_prev: i64,
+    pub expected_prev: Option<i64>,
     pub envelope: Vec<u8>,
     pub author_pubkey: Vec<u8>,
 }
 
 impl Store {
-    /// Append the next version for `(owner, path)` iff the head equals
-    /// `expected_prev`; returns the new version or `Conflict`.
+    /// Append the next version for `(owner, path)`. With `Some(expected_prev)` the head
+    /// must match (else `Conflict`); with `None` it appends unconditionally.
     pub async fn put_secret(&self, p: PutSecret) -> Result<i64, StoreError> {
         self.run(move |c| {
             let current: i64 = c
@@ -41,7 +43,7 @@ impl Store {
                     |r| r.get(0),
                 )
                 .map_err(|_| StoreError::Sql)?;
-            if current != p.expected_prev {
+            if matches!(p.expected_prev, Some(expected) if expected != current) {
                 return Err(StoreError::Conflict);
             }
             let next = current + 1;
@@ -56,14 +58,20 @@ impl Store {
         .await
     }
 
-    /// Delete every version of `(owner, path)`; returns whether any row was removed.
-    pub async fn remove_secret(&self, owner: &str, path: &str) -> Result<bool, StoreError> {
+    /// Delete `(owner, path)`: every version when `version == 0`, else just that one.
+    /// Returns whether any row was removed.
+    pub async fn remove_secret(
+        &self,
+        owner: &str,
+        path: &str,
+        version: i64,
+    ) -> Result<bool, StoreError> {
         let (owner, path) = (owner.to_string(), path.to_string());
         self.run(move |c| {
             let removed = c
                 .execute(
-                    "DELETE FROM secrets WHERE owner=?1 AND path=?2",
-                    params![owner, path],
+                    "DELETE FROM secrets WHERE owner=?1 AND path=?2 AND (?3=0 OR version=?3)",
+                    params![owner, path, version],
                 )
                 .map_err(|_| StoreError::Sql)?;
             Ok(removed > 0)
