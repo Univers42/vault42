@@ -42,6 +42,9 @@ pub enum Command {
         authority: String,
         #[arg(long)]
         tenant: String,
+        /// Invite token, if the authority requires one.
+        #[arg(long, env = "VAULT42_REGISTER_TOKEN")]
+        token: Option<String>,
     },
     /// Seal a secret (stdin or --file) and push it.
     Set {

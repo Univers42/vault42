@@ -23,6 +23,8 @@ use vault42_core::Identity;
 struct RegisterReq<'a> {
     tenant: &'a str,
     author_pubkey: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -32,11 +34,13 @@ struct RegisterResp {
     expires_at: i64,
 }
 
-/// Register `identity` as `tenant` with the authority at `authority`, saving the contract.
+/// Register `identity` as `tenant` with the authority, sending the invite `token` when
+/// the authority requires one, and saving the returned contract.
 pub async fn cmd_register(
     identity: &Identity,
     authority: &str,
     tenant: &str,
+    token: Option<&str>,
 ) -> anyhow::Result<()> {
     let author_pubkey = hex::encode(identity.author_public().to_bytes());
     let url = format!("{}/v1/register", authority.trim_end_matches('/'));
@@ -45,6 +49,7 @@ pub async fn cmd_register(
         .json(&RegisterReq {
             tenant,
             author_pubkey: &author_pubkey,
+            token,
         })
         .send()
         .await?;

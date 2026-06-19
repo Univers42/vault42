@@ -22,6 +22,7 @@ pub struct Config {
     pub key_path: String,
     pub seed_hex: Option<String>,
     pub ttl_days: i64,
+    pub register_token: Option<String>,
 }
 
 impl Config {
@@ -37,6 +38,7 @@ impl Config {
             ttl_days: env("VAULT42_CONTRACT_TTL_DAYS", "365")
                 .parse()
                 .unwrap_or(365),
+            register_token: std::env::var("VAULT42_REGISTER_TOKEN").ok(),
         }
     }
 }
