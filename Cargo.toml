@@ -2,9 +2,12 @@
 resolver = "3"
 members = [
     "crates/vault42-core",
+    "crates/vault42-proto",
+    "crates/vault42-grobase",
     "crates/vault42-server",
     "crates/vault42-cli",
     "crates/vault42-ssh",
+    "crates/vault42-contract",
     "crates/vault42-conformance",
 ]
 # vault42-conformance is a test-only battery (proptest + cargo-fuzz); it is NOT in
@@ -12,9 +15,12 @@ members = [
 # remaining a workspace member (`cargo test -p vault42-conformance` still works).
 default-members = [
     "crates/vault42-core",
+    "crates/vault42-proto",
+    "crates/vault42-grobase",
     "crates/vault42-server",
     "crates/vault42-cli",
     "crates/vault42-ssh",
+    "crates/vault42-contract",
 ]
 
 [workspace.package]
@@ -36,6 +42,41 @@ thiserror = "1"
 zeroize = { version = "1", features = ["derive"] }
 # binaries (P3–P8)
 anyhow = "1"
+# transport (P1/P5/P6) — the protobuf/tonic spine
+tonic = "0.12"
+prost = "0.13"
+tonic-build = "0.12"
+protoc-bin-vendored = "3"
+# grobase REST client (P3) — HMAC service-auth + JSON
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# async runtime + HTTP (P4/P5) — the server orchestrator and the grobase REST hop
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
+tokio-stream = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# HTTP server for the contract authority (the nano grobase peer)
+axum = "0.7"
+# storage substrate (P5) — embedded SQLite, statically bundled (scratch-image safe)
+rusqlite = { version = "0.32", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+# observability (P5) — structured logs; never carries plaintext (kernel rule 7)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# CLI surface (P6)
+clap = { version = "4", features = ["derive", "env"] }
+rpassword = "7"
+dirs = "5"
+# shared encodings (P5/P6)
+base64 = "0.22"
+uuid = { version = "1", features = ["v5"] }
+# SSH edge (P8) — hardened transport; auth only, no server-side plaintext
+russh = "0.45"
+russh-keys = "0.45"
+async-trait = "0.1"
 
 # Strip + thin-LTO the release binaries (mirrors the grobase data-plane profile).
 [profile.release]

@@ -1,0 +1,6 @@
+{
+  "42header.username": "dlesieur",
+  "42header.email": "dev.pro.photo@gmail.com",
+  "[rust]": { "editor.formatOnSave": true },
+  "editor.rulers": [80, 100]
+}

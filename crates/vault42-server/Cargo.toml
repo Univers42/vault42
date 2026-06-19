@@ -16,3 +16,20 @@ path = "src/main.rs"
 
 [dependencies]
 vault42-core = { path = "../vault42-core" }
+vault42-proto = { path = "../vault42-proto" }
+vault42-grobase = { path = "../vault42-grobase" }
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+rusqlite.workspace = true
+r2d2.workspace = true
+r2d2_sqlite.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tokio-stream = { workspace = true, features = ["net"] }

@@ -71,6 +71,63 @@ row `{grantee, role, scope, expires_at, revoked_at}` **plus** a grobase ABAC `ti
 Three independent expiry gates: grant `expires_at` short-circuit → ABAC `time_window` in
 `/permissions/decide` → the grobase API-key's own `expires_at`.
 
+## D9 — As-built server: Ed25519 client identity + own SQLite store (grobase seam optional)
+
+The deployed server (P5) refines D3/D4 to match shippable reality:
+
+- **Identity is the client's Ed25519 author key**, not a grobase API key. Every gRPC
+  request carries `x-v42-ts/-pub/-sig` — an Ed25519 signature over `ts\n<grpc-method>` —
+  proving key possession, binding the call to its method, and replay-bounding it to the
+  skew window. The principal (owner) is the key's fingerprint — the *same* identity that
+  authors envelopes — so storage owner-scoping and authorship are one value with **no
+  password and no server secret**. This is *more* zero-knowledge than an API-key model.
+- **Storage is the server's own embedded SQLite** on an encrypted volume (the D4
+  `vault42_secrets` shape, owner-scoped per request), not the grobase data plane. Reason:
+  no grobase is deployed on fly to point at, and deploying the whole grobase stack is out
+  of scope. The blob is still an opaque envelope; the server cannot decrypt it, so the L1
+  zero-knowledge guarantee is identical. Migration `071` + the `vault42-grobase` REST
+  client (`verify_key`/`decide`/`audit_append`) remain in-tree, flag-gated, ready for when
+  a private grobase is stood up (set `GROBASE_URL` + `INTERNAL_SERVICE_TOKEN`).
+- **Server-side integrity without decryption:** the server verifies each envelope's
+  Ed25519 author signature against the caller's key via `vault42_core::verify_envelope_author`
+  before storing — rejecting forged/misattributed blobs while never seeing plaintext.
+- **Audit is a local per-owner hash chain** (grobase `chain.go` discipline), mirrored to
+  grobase when wired. Proven by the 6-test in-process gRPC battery + the live fly round-trip.
+
+## D10 — Region cdg, not mad
+
+fly.io does not offer Madrid (`mad`) to this account; `cdg` (Paris) is the nearest EU
+region it provides and matches the org's existing apps. Deployed app: `vault42` →
+`https://vault42.fly.dev` (TLS at the fly edge, plaintext h2c to the app), 12 MB
+distroless image, encrypted 1 GB volume `vault42_data` at `/data`.
+
+## D11 — Managed multi-tenancy via a nano contract authority (the deployed duo)
+
+The product is a **duo of two scale-to-zero fly apps**, costing ~$0.30/mo (volumes only):
+
+- **`grobase-nano`** (`vault42-contract`, the authority): a tiny axum HTTP service. A
+  person self-registers (`POST /v1/register {tenant, author_pubkey}`); it claims the
+  tenant name (SQLite registry) and returns an **Ed25519-signed contract** binding that
+  public key to the tenant for a TTL. It exposes `GET /v1/contract-key`. After issuing it
+  idles — it is **never on vault42's request path**.
+- **`vault42`** (the data plane): when `VAULT42_CONTRACT_PUBKEY` is set, every request
+  must carry a valid `x-v42-contract`; vault42 **verifies it OFFLINE** with the authority
+  public key (signature + expiry + author-fingerprint binding) — no call back to the
+  authority. So the authority bears ~zero resource and the consuming server does the
+  work, exactly as intended. The tenant comes from the contract; storage stays
+  owner-scoped by the Ed25519 fingerprint (one identity = one isolated vault).
+
+**Why a purpose-built nano authority, not grobase itself:** grobase's full stack
+(PG + Kong + Go control plane + …) cannot run on fly's free tier, and the contract role
+needs only "sign a claim + keep a tenant list" — a 5-MB SQLite binary. This *is* the
+"nano" the brief asked for; it is trivially swappable for real grobase later (vault42 only
+needs an authority public key + the `/v1/register` contract shape).
+
+**Security:** the contract is a signed, public credential (no secret in it). Registration
+sends only the public key. HTTPS at the fly edge on both apps. A per-owner **quota**
+(`VAULT42_MAX_SECRETS`, default off; prod 1000) guardrails the cross-owner share-spam DoS.
+Proven live: unregistered access denied; two tenants register and are isolated.
+
 ## D8 — L2/L3 defense in depth
 
 L1 = client zero-knowledge (the real guarantee). L2 = grobase CMEK envelope (AES-256-GCM + Vault
