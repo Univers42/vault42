@@ -112,10 +112,11 @@ impl VaultSvc {
     }
 }
 
-/// Map a storage error to the right gRPC status (conflict vs. internal).
+/// Map a storage error to the right gRPC status.
 pub(crate) fn map_store(error: StoreError) -> Status {
     match error {
         StoreError::Conflict => Status::failed_precondition("version conflict"),
+        StoreError::Quota => Status::resource_exhausted("per-owner secret quota exceeded"),
         StoreError::Sql => Status::internal("storage error"),
     }
 }

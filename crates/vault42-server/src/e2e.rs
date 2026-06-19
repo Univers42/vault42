@@ -29,13 +29,19 @@ use vault42_proto::vault::v1::vault_client::VaultClient;
 use vault42_proto::vault::v1::vault_server::VaultServer;
 use vault42_proto::vault::v1::{GetRequest, PushRequest, ShareRequest};
 
-/// A throwaway SQLite store on a per-test temp file (WAL sidecars cleaned best-effort).
-fn fresh_store(tag: &str) -> Store {
+/// A throwaway SQLite store on a per-test temp file (WAL sidecars cleaned best-effort),
+/// capped at `max_secrets` distinct paths per owner (0 = unlimited).
+fn fresh_capped(tag: &str, max_secrets: i64) -> Store {
     let path = std::env::temp_dir().join(format!("vault42-e2e-{}-{tag}.db", std::process::id()));
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
     }
-    Store::open(path.to_str().expect("path")).expect("open store")
+    Store::open(path.to_str().expect("path"), max_secrets).expect("open store")
+}
+
+/// A fresh unlimited store.
+fn fresh_store(tag: &str) -> Store {
+    fresh_capped(tag, 0)
 }
 
 /// Serve the vault on an ephemeral loopback port and return its address.
@@ -680,4 +686,54 @@ async fn contract_gate_accepts_valid_and_rejects_the_rest() {
         c.get(stale).await.expect_err("expired").code(),
         Code::Unauthenticated
     );
+}
+
+#[tokio::test]
+async fn per_owner_quota_caps_distinct_secrets() {
+    let addr = spawn(fresh_capped("quota", 3)).await;
+    let mut c = client(addr);
+    let id = Identity::generate();
+    let owner = principal_of(&id);
+    for i in 0..3 {
+        let envelope = seal_for(&id, &owner, &format!("s{i}"), 1, b"x");
+        c.push(signed(
+            PushRequest {
+                path: format!("s{i}"),
+                envelope,
+                expected_prev_rev: 0,
+            },
+            &id,
+            "/vault.v1.Vault/Push",
+        ))
+        .await
+        .expect("within quota");
+    }
+    let over = seal_for(&id, &owner, "s3", 1, b"x");
+    let err = c
+        .push(signed(
+            PushRequest {
+                path: "s3".into(),
+                envelope: over,
+                expected_prev_rev: 0,
+            },
+            &id,
+            "/vault.v1.Vault/Push",
+        ))
+        .await
+        .expect_err("a 4th distinct secret exceeds the quota");
+    assert_eq!(err.code(), Code::ResourceExhausted);
+
+    // updating an existing path (new version) is always allowed
+    let update = seal_for(&id, &owner, "s0", 2, b"y");
+    c.push(signed(
+        PushRequest {
+            path: "s0".into(),
+            envelope: update,
+            expected_prev_rev: 1,
+        },
+        &id,
+        "/vault.v1.Vault/Push",
+    ))
+    .await
+    .expect("updating an existing secret is not capped");
 }

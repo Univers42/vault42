@@ -26,6 +26,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum StoreError {
     #[error("version conflict")]
     Conflict,
+    #[error("per-owner secret quota exceeded")]
+    Quota,
     #[error("storage error")]
     Sql,
 }
@@ -42,22 +44,25 @@ CREATE TABLE IF NOT EXISTS audit (\
   action TEXT NOT NULL, target TEXT NOT NULL, prev_hash TEXT NOT NULL, hash TEXT NOT NULL,\
   PRIMARY KEY (owner, seq));";
 
-/// A clonable handle to the SQLite connection pool.
+/// A clonable handle to the SQLite connection pool. `max_secrets` caps the number of
+/// distinct paths one owner may create (0 = unlimited) — a guardrail against a
+/// cross-owner share-spam DoS.
 #[derive(Clone)]
 pub struct Store {
     pool: Pool<SqliteConnectionManager>,
+    pub(crate) max_secrets: i64,
 }
 
 impl Store {
     /// Open (creating if needed) the store at `path` and apply the schema. The pool is
     /// capped at one connection so every read-then-write (version bump, audit-chain
     /// link) is serialized and atomic — no fork, no lost audit event under concurrency.
-    pub fn open(path: &str) -> anyhow::Result<Self> {
+    pub fn open(path: &str, max_secrets: i64) -> anyhow::Result<Self> {
         let manager = SqliteConnectionManager::file(path)
             .with_init(|c| c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"));
         // ponytail: single writer connection — shard by owner if write throughput matters
         let pool = r2d2::Pool::builder().max_size(1).build(manager)?;
-        let store = Self { pool };
+        let store = Self { pool, max_secrets };
         store.migrate()?;
         Ok(store)
     }

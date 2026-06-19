@@ -28,6 +28,7 @@ pub struct Config {
     pub skew_secs: i64,
     pub grobase: Option<GrobaseCfg>,
     pub contract_pub: Option<[u8; 32]>,
+    pub max_secrets: i64,
 }
 
 impl Config {
@@ -41,6 +42,7 @@ impl Config {
             skew_secs: env("VAULT42_AUTH_SKEW_SECS", "120").parse().unwrap_or(120),
             grobase: grobase_cfg(),
             contract_pub: contract_pub(),
+            max_secrets: env("VAULT42_MAX_SECRETS", "0").parse().unwrap_or(0),
         }
     }
 }

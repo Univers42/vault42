@@ -70,7 +70,7 @@ fn run() -> anyhow::Result<()> {
 
 /// Build the service from config and serve gRPC until the process is terminated.
 async fn serve(cfg: Config) -> anyhow::Result<()> {
-    let store = Store::open(&cfg.db_path)?;
+    let store = Store::open(&cfg.db_path, cfg.max_secrets)?;
     let grobase = match &cfg.grobase {
         Some(grobase_cfg) => Some(connect_grobase(grobase_cfg)?),
         None => None,

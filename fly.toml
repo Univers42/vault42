@@ -16,6 +16,7 @@ primary_region = "cdg"
   VAULT42_PORT = "8443"
   VAULT42_DB = "/data/vault42.db"
   VAULT42_AUTH_SKEW_SECS = "120"
+  VAULT42_MAX_SECRETS = "1000"
   RUST_LOG = "info"
 
 [[mounts]]

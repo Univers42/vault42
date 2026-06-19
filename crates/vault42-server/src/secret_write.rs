@@ -35,6 +35,7 @@ impl Store {
     /// Append the next version for `(owner, path)`. With `Some(expected_prev)` the head
     /// must match (else `Conflict`); with `None` it appends unconditionally.
     pub async fn put_secret(&self, p: PutSecret) -> Result<i64, StoreError> {
+        let max = self.max_secrets;
         self.run(move |c| {
             let current: i64 = c
                 .query_row(
@@ -45,6 +46,18 @@ impl Store {
                 .map_err(|_| StoreError::Sql)?;
             if matches!(p.expected_prev, Some(expected) if expected != current) {
                 return Err(StoreError::Conflict);
+            }
+            if current == 0 && max > 0 {
+                let owned: i64 = c
+                    .query_row(
+                        "SELECT COUNT(DISTINCT path) FROM secrets WHERE owner=?1",
+                        params![p.owner],
+                        |r| r.get(0),
+                    )
+                    .map_err(|_| StoreError::Sql)?;
+                if owned >= max {
+                    return Err(StoreError::Quota);
+                }
             }
             let next = current + 1;
             c.execute(
