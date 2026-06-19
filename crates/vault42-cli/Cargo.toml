@@ -16,3 +16,15 @@ path = "src/main.rs"
 
 [dependencies]
 vault42-core = { path = "../vault42-core" }
+vault42-proto = { path = "../vault42-proto" }
+tokio.workspace = true
+tonic = { workspace = true, features = ["tls", "tls-roots"] }
+clap.workspace = true
+rpassword.workspace = true
+dirs.workspace = true
+anyhow.workspace = true
+hex.workspace = true
+base64.workspace = true
+uuid.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true

@@ -30,22 +30,26 @@ mod aead;
 mod envelope;
 mod error;
 mod identity;
+mod inspect;
 mod kdf;
 mod keystore;
 mod metadata;
 mod open;
 mod recipient;
+mod request;
 mod seal;
 mod sign;
 
 pub use envelope::Envelope;
 pub use error::{Error, Result};
 pub use identity::Identity;
+pub use inspect::verify_envelope_author;
 pub use kdf::KdfParams;
 pub use keystore::{open_keystore, seal_keystore, KeystoreBlob};
 pub use metadata::{Metadata, ReadScope};
 pub use open::open;
 pub use recipient::{RecipientKind, WrappedDek};
+pub use request::{fingerprint, sign_request, verify_request};
 pub use seal::{seal, Recipients};
 
 // The cryptographic key types, re-exported under domain names so the server/CLI

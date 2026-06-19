@@ -17,3 +17,5 @@ sha2.workspace = true
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+reqwest.workspace = true
+zeroize.workspace = true

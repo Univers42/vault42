@@ -39,6 +39,11 @@ message GetRequest {
 message GetResponse {
   bytes envelope = 1;
   uint64 version = 2;
+  // The full Ed25519 author public key stored alongside the envelope, so a recipient
+  // of a SHARED secret can verify authorship: the reader checks
+  // fingerprint(author_pubkey) == the signature-bound author id in the envelope before
+  // trusting it, so a malicious server cannot substitute a different author key.
+  bytes author_pubkey = 3;
 }
 message Chunk { bytes data = 1; }
 
