@@ -377,3 +377,189 @@ async fn share_round_trips_to_a_friend() {
     .expect("bob opens alice's shared secret");
     assert_eq!(&opened[..], secret);
 }
+
+#[tokio::test]
+async fn many_tenants_are_fully_isolated() {
+    let addr = spawn(fresh_store("tenants")).await;
+    let mut c = client(addr);
+    let ids: Vec<Identity> = (0..24).map(|_| Identity::generate()).collect();
+    for (i, id) in ids.iter().enumerate() {
+        let owner = principal_of(id);
+        let envelope = seal_for(
+            id,
+            &owner,
+            "p",
+            1,
+            format!("secret-of-tenant-{i}").as_bytes(),
+        );
+        c.push(signed(
+            PushRequest {
+                path: "p".into(),
+                envelope,
+                expected_prev_rev: 0,
+            },
+            id,
+            "/vault.v1.Vault/Push",
+        ))
+        .await
+        .expect("push");
+    }
+    for (i, id) in ids.iter().enumerate() {
+        let owner = principal_of(id);
+        let resp = c
+            .get(signed(
+                GetRequest {
+                    path: "p".into(),
+                    version: 0,
+                },
+                id,
+                "/vault.v1.Vault/Get",
+            ))
+            .await
+            .expect("get")
+            .into_inner();
+        let env = Envelope::from_bytes(&resp.envelope).expect("decode");
+        let mut author = [0u8; 32];
+        author.copy_from_slice(&resp.author_pubkey);
+        let scope = ReadScope {
+            secret_id: &sid(&owner, "p"),
+            min_rev: 0,
+        };
+        let opened = open(
+            &env,
+            id.encryption_secret(),
+            &AuthorPublicKey::from_bytes(&author).expect("author"),
+            &scope,
+        )
+        .expect("each tenant opens its own");
+        assert_eq!(&opened[..], format!("secret-of-tenant-{i}").as_bytes());
+    }
+    let outsider = Identity::generate();
+    let err = c
+        .get(signed(
+            GetRequest {
+                path: "p".into(),
+                version: 0,
+            },
+            &outsider,
+            "/vault.v1.Vault/Get",
+        ))
+        .await
+        .expect_err("a tenant that never wrote sees nothing");
+    assert_eq!(err.code(), Code::NotFound);
+}
+
+#[tokio::test]
+async fn many_versions_round_trip() {
+    let addr = spawn(fresh_store("versions")).await;
+    let mut c = client(addr);
+    let id = Identity::generate();
+    let owner = principal_of(&id);
+    let total = 40u64;
+    for v in 1..=total {
+        let envelope = seal_for(&id, &owner, "v", v, format!("value-{v}").as_bytes());
+        let resp = c
+            .push(signed(
+                PushRequest {
+                    path: "v".into(),
+                    envelope,
+                    expected_prev_rev: v - 1,
+                },
+                &id,
+                "/vault.v1.Vault/Push",
+            ))
+            .await
+            .expect("push")
+            .into_inner();
+        assert_eq!(resp.version, v);
+    }
+    let latest = c
+        .get(signed(
+            GetRequest {
+                path: "v".into(),
+                version: 0,
+            },
+            &id,
+            "/vault.v1.Vault/Get",
+        ))
+        .await
+        .expect("get latest")
+        .into_inner();
+    assert_eq!(latest.version, total);
+    let v5 = c
+        .get(signed(
+            GetRequest {
+                path: "v".into(),
+                version: 5,
+            },
+            &id,
+            "/vault.v1.Vault/Get",
+        ))
+        .await
+        .expect("get v5")
+        .into_inner();
+    assert_eq!(v5.version, 5);
+}
+
+#[tokio::test]
+async fn edge_paths_and_payloads_round_trip() {
+    let addr = spawn(fresh_store("edge")).await;
+    let mut c = client(addr);
+    let id = Identity::generate();
+    let owner = principal_of(&id);
+    let cases: Vec<(String, Vec<u8>)> = vec![
+        ("a".into(), Vec::new()),
+        ("deep/nested/path/with/many/segments".into(), b"x".to_vec()),
+        (
+            "unicode-\u{e9}\u{1f510}-key".into(),
+            "secr\u{e9}t-\u{1f511}".as_bytes().to_vec(),
+        ),
+        ("binary".into(), (0u8..=255).collect()),
+        ("big".into(), vec![0xab; 256 * 1024]),
+    ];
+    for (path, payload) in &cases {
+        let envelope = seal_for(&id, &owner, path, 1, payload);
+        c.push(signed(
+            PushRequest {
+                path: path.clone(),
+                envelope,
+                expected_prev_rev: 0,
+            },
+            &id,
+            "/vault.v1.Vault/Push",
+        ))
+        .await
+        .expect("push");
+        let resp = c
+            .get(signed(
+                GetRequest {
+                    path: path.clone(),
+                    version: 0,
+                },
+                &id,
+                "/vault.v1.Vault/Get",
+            ))
+            .await
+            .expect("get")
+            .into_inner();
+        let env = Envelope::from_bytes(&resp.envelope).expect("decode");
+        let mut author = [0u8; 32];
+        author.copy_from_slice(&resp.author_pubkey);
+        let scope = ReadScope {
+            secret_id: &sid(&owner, path),
+            min_rev: 0,
+        };
+        let opened = open(
+            &env,
+            id.encryption_secret(),
+            &AuthorPublicKey::from_bytes(&author).expect("author"),
+            &scope,
+        )
+        .expect("open");
+        assert_eq!(
+            &opened[..],
+            &payload[..],
+            "roundtrip failed for path {path}"
+        );
+    }
+}
