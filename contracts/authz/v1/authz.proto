@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+// The vault42 authorization surface. `Check` maps onto grobase's
+// POST /permissions/decide (the action → op, resource.kind → resource_type), so the
+// vault42 server consults the existing ABAC PDP rather than re-implementing policy.
+// `Grant` issues a time-bound (TTL) role lease.
+package authz.v1;
+
+service Authz {
+  rpc Check(CheckRequest) returns (CheckResponse);
+  rpc Grant(GrantRequest) returns (GrantResponse);
+}
+
+message Principal {
+  string id = 1;
+  string tenant = 2;
+}
+message Resource {
+  string kind = 1; // → grobase resource_type, e.g. "vault42_secrets"
+  string name = 2; // → grobase resource_name, e.g. the secret path
+}
+
+message CheckRequest {
+  Principal principal = 1;
+  string action = 2; // read | write | update | admin → grobase op
+  Resource resource = 3;
+}
+message CheckResponse {
+  bool allow = 1;
+  string reason = 2;
+}
+
+message GrantRequest {
+  Principal principal = 1;
+  Resource resource = 2;
+  string role = 3; // read | write | update | admin
+  int64 ttl_seconds = 4;
+}
+message GrantResponse {
+  string grant_id = 1;
+  int64 expires_at = 2;
+}

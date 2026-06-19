@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/vault42-core",
+    "crates/vault42-proto",
     "crates/vault42-server",
     "crates/vault42-cli",
     "crates/vault42-ssh",
@@ -12,6 +13,7 @@ members = [
 # remaining a workspace member (`cargo test -p vault42-conformance` still works).
 default-members = [
     "crates/vault42-core",
+    "crates/vault42-proto",
     "crates/vault42-server",
     "crates/vault42-cli",
     "crates/vault42-ssh",
@@ -36,6 +38,11 @@ thiserror = "1"
 zeroize = { version = "1", features = ["derive"] }
 # binaries (P3–P8)
 anyhow = "1"
+# transport (P1/P5/P6) — the protobuf/tonic spine
+tonic = "0.12"
+prost = "0.13"
+tonic-build = "0.12"
+protoc-bin-vendored = "3"
 
 # Strip + thin-LTO the release binaries (mirrors the grobase data-plane profile).
 [profile.release]

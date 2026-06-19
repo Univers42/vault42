@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+// The vault42 user/operator surface. Every secret payload crosses the wire as an
+// OPAQUE `bytes envelope` (a serialized vault42-core Envelope): the server stores
+// and returns it but cannot decrypt it. Scope fields (path, version) are visible so
+// the server can owner-scope and version without ever touching plaintext or a DEK.
+package vault.v1;
+
+service Vault {
+  rpc Push(PushRequest) returns (PushResponse);
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Fetch(GetRequest) returns (stream Chunk);
+  rpc Ls(LsRequest) returns (LsResponse);
+  rpc Share(ShareRequest) returns (PushResponse);
+  rpc Rm(RmRequest) returns (RmResponse);
+  rpc Rotate(PushRequest) returns (PushResponse);
+  rpc RotateKeys(RotateKeysRequest) returns (RotateKeysResponse);
+  rpc Audit(AuditRequest) returns (stream AuditEvent);
+  rpc Unseal(UnsealRequest) returns (UnsealResponse);
+  rpc Whoami(WhoamiRequest) returns (WhoamiResponse);
+}
+
+// expected_prev_rev gives optimistic concurrency: the server writes only if the
+// stored version matches (0 = create).
+message PushRequest {
+  string path = 1;
+  bytes envelope = 2;
+  uint64 expected_prev_rev = 3;
+}
+message PushResponse {
+  string secret_id = 1;
+  uint64 version = 2;
+}
+
+message GetRequest {
+  string path = 1;
+  uint64 version = 2; // 0 = latest
+}
+message GetResponse {
+  bytes envelope = 1;
+  uint64 version = 2;
+}
+message Chunk { bytes data = 1; }
+
+message LsRequest { string prefix = 1; }
+message SecretMeta {
+  string path = 1;
+  uint64 version = 2;
+  int64 updated_at = 3;
+  uint32 recipients = 4;
+}
+message LsResponse { repeated SecretMeta secrets = 1; }
+
+// Share re-seals the secret (a new recipient added client-side) under a new rev.
+message ShareRequest {
+  string path = 1;
+  bytes envelope = 2;
+  uint64 expected_prev_rev = 3;
+}
+
+message RmRequest {
+  string path = 1;
+  uint64 version = 2;
+}
+message RmResponse { bool tombstoned = 1; }
+
+message ReKeyed {
+  string path = 1;
+  bytes envelope = 2;
+  uint64 expected_prev_rev = 3;
+}
+message RotateKeysRequest { repeated ReKeyed items = 1; }
+message RotateKeysResponse { uint32 rewrapped = 1; }
+
+message AuditRequest { int64 since = 1; }
+message AuditEvent {
+  int64 seq = 1;
+  string ts = 2;
+  string actor = 3;
+  string action = 4;
+  string target = 5;
+  string prev_hash = 6;
+  string hash = 7;
+}
+
+message UnsealRequest { bytes share = 1; }
+message UnsealResponse {
+  enum State {
+    SEALED = 0;
+    UNSEALED = 1;
+  }
+  State state = 1;
+  uint32 progress = 2;
+}
+
+message WhoamiRequest {}
+message WhoamiResponse {
+  string principal = 1;
+  repeated string roles = 2;
+  uint32 aal = 3;
+}
