@@ -1,0 +1,39 @@
+name: vault42-ci
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+# Mirrors grobase's strictness: fmt clean, clippy warnings-as-errors, tests green,
+# supply-chain (audit + deny) clean, no committed secrets. buf (P1) and semgrep (P8)
+# are added with the phases that introduce protobuf and the SSH surface.
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    container: public.ecr.aws/docker/library/rust:1.96-slim-bookworm
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add clippy rustfmt
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-audit cargo-deny --locked
+      - run: cargo audit
+      - run: cargo deny check
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml

@@ -1,0 +1,13 @@
+title = "vault42 gitleaks config"
+
+# Build on gitleaks' default rule set; vault42 adds no inline secrets (key material
+# is radioactive — never committed, see THREAT-MODEL.md).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures and example material only."
+paths = [
+    '''.*\.key\.example$''',
+    '''crates/vault42-conformance/.*''',
+]

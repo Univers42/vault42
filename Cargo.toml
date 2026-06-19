@@ -1,0 +1,52 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/vault42-core",
+    "crates/vault42-server",
+    "crates/vault42-cli",
+    "crates/vault42-ssh",
+    "crates/vault42-conformance",
+]
+# vault42-conformance is a test-only battery (proptest + cargo-fuzz); it is NOT in
+# any deployable's dependency graph, so it is excluded from `cargo build` while
+# remaining a workspace member (`cargo test -p vault42-conformance` still works).
+default-members = [
+    "crates/vault42-core",
+    "crates/vault42-server",
+    "crates/vault42-cli",
+    "crates/vault42-ssh",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+license = "AGPL-3.0-only"
+repository = "https://github.com/Univers42/vault42"
+
+# vault42 writes no `unsafe` of its own (the kernel rule: no unsafe without a
+# SAFETY invariant). Forbid it workspace-wide; downgrade to "deny" + a SAFETY note
+# only if a transport integration ever genuinely needs it.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+# crypto core (P2) — single version source for every crate
+thiserror = "1"
+zeroize = { version = "1", features = ["derive"] }
+# binaries (P3–P8)
+anyhow = "1"
+
+# Strip + thin-LTO the release binaries (mirrors the grobase data-plane profile).
+[profile.release]
+strip = true
+lto = "thin"
+
+# Nano profile for the lean CLI binary: smallest credible static binary that is
+# still fast (opt-level "s", fat LTO, one codegen unit, abort-on-panic).
+[profile.nano]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"

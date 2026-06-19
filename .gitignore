@@ -1,0 +1,20 @@
+# Rust build output
+/target
+**/*.rs.bk
+*.pdb
+fuzz/target
+fuzz/corpus
+
+# Local key material & secrets must NEVER be committed (radioactive — see THREAT-MODEL.md)
+*.v42
+keystore*
+.env
+.env.local
+*.seed
+*.key
+!deploy/**/*.key.example
+
+# OS / editor noise
+.DS_Store
+
+# Cargo.lock IS committed (this workspace ships binaries — reproducible builds).
