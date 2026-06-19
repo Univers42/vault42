@@ -6,8 +6,9 @@ fuzz/target
 fuzz/corpus
 
 # Local key material & secrets must NEVER be committed (radioactive — see THREAT-MODEL.md)
+# NOTE: the runtime keystore is `*.v42` below — do NOT use a broad `keystore*` here, it
+# silently swallows the `keystore.rs` / `keystore_io.rs` SOURCE files (it once did).
 *.v42
-keystore*
 .env
 .env.local
 *.seed
@@ -18,3 +19,6 @@ keystore*
 .DS_Store
 
 # Cargo.lock IS committed (this workspace ships binaries — reproducible builds).
+
+# operator-only local secrets (never committed)
+*.local.txt
