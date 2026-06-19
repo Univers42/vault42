@@ -18,24 +18,28 @@
 use crate::authority::Authority;
 use crate::signing::now_unix;
 use crate::store::Store;
+use crate::validate::{parse_fp, valid_tenant};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use vault42_core::fingerprint;
 
-/// Shared application state.
+/// Shared application state. `register_token`, when set, gates registration (an invite
+/// code shared with friends) so the public authority can't be squatted or flooded.
 pub struct App {
     pub authority: Authority,
     pub store: Store,
+    pub register_token: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct RegisterReq {
     tenant: String,
     author_pubkey: String,
+    #[serde(default)]
+    token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -76,6 +80,17 @@ async fn register(
     State(app): State<Arc<App>>,
     Json(req): Json<RegisterReq>,
 ) -> Result<Json<RegisterResp>, (StatusCode, String)> {
+    if let Some(expected) = &app.register_token {
+        if req.token.as_deref() != Some(expected.as_str()) {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "registration token required".into(),
+            ));
+        }
+    }
+    if !valid_tenant(&req.tenant) {
+        return Err((StatusCode::BAD_REQUEST, "invalid tenant name".into()));
+    }
     let author_fp = parse_fp(&req.author_pubkey).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let claimed = app
         .store
@@ -94,15 +109,4 @@ async fn register(
         tenant: req.tenant,
         expires_at,
     }))
-}
-
-/// Decode a hex Ed25519 public key into its 16-byte author fingerprint.
-fn parse_fp(pubkey_hex: &str) -> Result<[u8; 16], String> {
-    let bytes =
-        hex::decode(pubkey_hex.trim()).map_err(|_| "author_pubkey must be hex".to_string())?;
-    let key: [u8; 32] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| "author_pubkey must be 32 bytes".to_string())?;
-    Ok(fingerprint(&key))
 }

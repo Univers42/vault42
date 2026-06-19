@@ -20,6 +20,7 @@ mod config;
 mod routes;
 mod signing;
 mod store;
+mod validate;
 
 use config::Config;
 use routes::{router, App};
@@ -58,7 +59,11 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
         bind = %cfg.bind,
         "vault42-contract authority up — set public_key as vault42 VAULT42_CONTRACT_PUBKEY"
     );
-    let app = Arc::new(App { authority, store });
+    let app = Arc::new(App {
+        authority,
+        store,
+        register_token: cfg.register_token,
+    });
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     axum::serve(listener, router(app)).await?;
     Ok(())

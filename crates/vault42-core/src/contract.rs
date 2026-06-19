@@ -76,6 +76,9 @@ pub fn verify_contract(authority_pub: &[u8; 32], token: &str, now: i64) -> Resul
     let contract: Contract = codec()
         .deserialize(&signed.payload)
         .map_err(|_| Error::Codec)?;
+    if contract.version != 1 {
+        return Err(Error::Format("contract version"));
+    }
     if now > contract.expires_at {
         return Err(Error::Expired);
     }

@@ -64,8 +64,13 @@ fn run() -> anyhow::Result<()> {
 /// authority (no vault42 session); the rest open a signed session.
 async fn dispatch(cli: Cli) -> anyhow::Result<()> {
     let identity = passphrase::unlock()?;
-    if let Command::Register { authority, tenant } = &cli.command {
-        return verbs_register::cmd_register(&identity, authority, tenant).await;
+    if let Command::Register {
+        authority,
+        tenant,
+        token,
+    } = &cli.command
+    {
+        return verbs_register::cmd_register(&identity, authority, tenant, token.as_deref()).await;
     }
     let mut session = Session::connect(&cli.server, identity).await?;
     match cli.command {
