@@ -13,3 +13,6 @@ workspace = true
 
 [dependencies]
 vault42-core = { path = "../vault42-core" }
+
+[dev-dependencies]
+proptest = "1"

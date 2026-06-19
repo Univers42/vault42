@@ -22,6 +22,17 @@ pub enum Error {
     /// The caller holds no wrapped DEK for this envelope (not a recipient).
     #[error("vault42-core: caller is not a recipient of this envelope")]
     NotARecipient,
+    /// The opened envelope does not match the requested secret_id / minimum rev
+    /// (rollback or substitution by a malicious server).
+    #[error("vault42-core: envelope does not match the requested scope")]
+    ScopeMismatch,
+    /// Two wrapped DEKs share a recipient id — the recipient set is not a set.
+    #[error("vault42-core: duplicate recipient in envelope")]
+    DuplicateRecipient,
+    /// A recovery-kind wrap is present although the metadata says recovery is off
+    /// (a lying client trying to make recovery look not-opted-in).
+    #[error("vault42-core: recovery wrap present but recovery_optin is false")]
+    RecoveryNotAllowed,
     /// Keystore open failed — wrong passphrase or a corrupt blob.
     #[error("vault42-core: wrong passphrase or corrupt keystore")]
     Passphrase,
@@ -31,7 +42,7 @@ pub enum Error {
     /// The OS CSPRNG failed to produce randomness.
     #[error("vault42-core: RNG failure")]
     Rng,
-    /// (De)serialization of an envelope or keystore blob failed.
+    /// (De)serialization of an envelope or keystore blob failed (incl. size-limit).
     #[error("vault42-core: codec error")]
     Codec,
 }

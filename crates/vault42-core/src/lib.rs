@@ -16,10 +16,10 @@ mod keystore;
 mod recipient;
 mod sign;
 
-pub use envelope::{open, seal, Envelope, Metadata};
+pub use envelope::{open, seal, Envelope, Metadata, ReadScope};
 pub use error::{Error, Result};
 pub use keystore::{open_keystore, seal_keystore, Identity, KdfParams, KeystoreBlob};
-pub use recipient::{key_id, RecipientKind, WrappedDek};
+pub use recipient::{RecipientKind, WrappedDek};
 
 // The cryptographic key types, re-exported under domain names so the server/CLI
 // construct recipients and authors without depending on the dalek crates directly.

@@ -38,14 +38,30 @@ can read another's data.
   (read ciphertext, drive the PDP, DoS) but **cannot decrypt**. Mitigate: HMAC binds
   method+path+body+timestamp (replay window `SERVICE_AUTH_SKEW_SECS`); dual-key rotation
   (`INTERNAL_SERVICE_TOKEN_PREV`); token in a fly secret, rotated on schedule.
-- **R8 Hand-rolled wire format** (the cost of rejecting age, D6). Mitigate: FROZEN format,
-  injectivity + decode-safety fuzzed, golden vectors committed, a `version` field gates migrations.
-- **R9 Author-pubkey trust** — a reader trusts `author_pubkey_id`; the server could lie about the
-  owner key. Mitigate: owner pubkey pinned in the tenant's grobase identity record (owner-scoped,
-  CMEK at rest), cross-checked client-side; audit-chain visibility on any owner-key change.
-- **R10 RNG dependence** — a broken `getrandom` would be catastrophic. Mitigate: XChaCha20's 192-bit
-  nonce makes random nonces collision-safe by construction; DEK is fresh per write; no
-  deterministic-nonce path exists in the format.
+- **R8 Hand-rolled wire format** (the cost of rejecting age, D6). Mitigate: the canonical AAD is
+  FROZEN + injective (it binds metadata, the recipient set, AND each recipient's `kind`); the bincode
+  codec is fixed-int + size-bounded (64 MiB) + reject-trailing, so `from_bytes` on untrusted bytes is
+  decode-safe and DoS-bounded; `wrapped` is stored sorted for a canonical per-envelope encoding; a
+  `version` field gates migrations. **Status:** unit tests pin roundtrip/tamper/injectivity/dedup; a
+  `cargo-fuzz` target over the decoder and golden vectors are a P2 follow-up (not yet committed).
+- **R9 Author-pubkey trust (TOFU)** — `open` pins the author key the caller passes and `verify_strict`
+  proves authorship against *that* key, but the *expected* key still comes from the (untrusted) server
+  on first fetch. This is trust-on-first-use: a server that lies about the owner key on the initial
+  fetch defeats the pin. Mitigate: pin the owner pubkey in the tenant's grobase identity record
+  (owner-scoped, CMEK at rest) and surface any owner-key change in the audit chain — but the initial
+  key-distribution problem is **not** fully solved; an out-of-band anchor is the real fix (future work).
+- **R10 RNG dependence (accepted)** — vault42 relies entirely on the OS CSPRNG (`getrandom`) with no
+  fallback. A *broken/predictable* RNG compromises the DEK directly (plaintext recoverable) regardless
+  of nonce width — the 192-bit nonce only removes *reuse* hazard from a *working* RNG, it does not
+  defend a broken one. This is an accepted dependency on the platform CSPRNG, stated plainly.
+- **R11 Recovery key has no forward secrecy / no rotation (D5)** — the per-tenant recovery keypair is a
+  single long-lived key; every recovery-wrapped envelope is wrapped to it, so a fly/Transit compromise
+  decrypts the *entire historical corpus* of opted-in writes, not one secret. Toggling opt-in does not
+  re-key, and a `rotate` re-attaches the current recovery key. `recovery_optin=false` is now enforced
+  on read (`open` rejects a Recovery wrap when opt-in is off), so "not retroactive" is crypto-checked —
+  but key rotation/forward-secrecy is **future work**: per-epoch recovery keys (epoch in metadata) +
+  the Shamir K-of-N split bound the blast radius. Until then, the operator's own (default-ON) tenant is
+  explicitly **operator-escrowed, not zero-knowledge** (DECISIONS.md D5).
 
 ## Accepted non-goals (documented, not solved)
 

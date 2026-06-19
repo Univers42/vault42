@@ -42,6 +42,10 @@ These are structured single-line **intent tags**, not prose, so they stay:
 - `// ponytail: …` — a deliberate simplification ([`minimalism-markers.md`](minimalism-markers.md)).
 - `// perf: …` — performance overriding minimalism on a hot path ([`minimalism-ladder.md`](minimalism-ladder.md)).
 - `// SAFETY: …` — the mandatory invariant note above a Rust `unsafe` block ([`refactor-rust.md`](refactor-rust.md)).
+- `// sec: …` — **(vault42 extension)** marks a line that upholds a security
+  invariant (zeroization, verify-before-decrypt, an AAD binding, owner-scoping).
+  vault42 is a zero-knowledge vault; the build contract requires these to be
+  greppable. Same discipline as `// perf:`: a fixed intent tag, not prose.
 
 Nothing else qualifies. A tag earns its place by being a fixed, greppable marker
 of intent — not an explanation of what the next line does.

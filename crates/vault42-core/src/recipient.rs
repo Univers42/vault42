@@ -19,6 +19,17 @@ pub enum RecipientKind {
     Recovery,
 }
 
+impl RecipientKind {
+    /// The stable byte code bound into the canonical AAD, so relabeling a wrap
+    /// (User↔Recovery) breaks the author signature.
+    pub(crate) fn code(self) -> u8 {
+        match self {
+            RecipientKind::User => 0,
+            RecipientKind::Recovery => 1,
+        }
+    }
+}
+
 /// One recipient's wrapped DEK plus the ephemeral public key needed to re-derive
 /// the KEK. `wrapped` is `AEAD(KEK, DEK, aad = recipient_id)`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -32,7 +43,7 @@ pub struct WrappedDek {
 
 /// The 16-byte fingerprint of a public key (first 16 bytes of its BLAKE3 hash),
 /// used as a recipient/author identifier in metadata and the canonical AAD.
-pub fn key_id(public_key_bytes: &[u8]) -> [u8; 16] {
+pub(crate) fn key_id(public_key_bytes: &[u8]) -> [u8; 16] {
     let hash = blake3::hash(public_key_bytes);
     let mut id = [0u8; 16];
     id.copy_from_slice(&hash.as_bytes()[..16]);
@@ -113,5 +124,14 @@ mod tests {
         let other = StaticSecret::random();
         let w = wrap(&[1u8; 32], &public, RecipientKind::User).expect("wrap");
         assert!(unwrap(&w, &other).is_err());
+    }
+
+    #[test]
+    fn tampered_recipient_id_fails_unwrap() {
+        let secret = StaticSecret::random();
+        let public = PublicKey::from(&secret);
+        let mut w = wrap(&[7u8; 32], &public, RecipientKind::User).expect("wrap");
+        w.recipient_id[0] ^= 0x01;
+        assert!(matches!(unwrap(&w, &secret), Err(Error::Aead)));
     }
 }
