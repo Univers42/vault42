@@ -16,19 +16,23 @@
 //! recipient-strip/relabel→sig-fail, scope/rollback rejection, recovery-opt-in gate.
 
 use vault42_core::{
-    open, open_keystore, seal, seal_keystore, Envelope, Error, Identity, KdfParams, Metadata,
-    ReadScope, RecipientKind, Recipients,
+    open, open_keystore, seal, seal_keystore, Envelope, Error, Identity, KdfParams, Kind, Metadata,
+    ReadScope, RecipientKind, Recipients, DEFAULT_MODE,
 };
 
 fn metadata(rev: u64, recovery_optin: bool) -> Metadata {
     Metadata {
-        version: 1,
+        version: 2,
         secret_id: "secret-1".into(),
         tenant: "tenant-1".into(),
         owner: "api-key:abc".into(),
         rev,
         content_type: "env".into(),
         recovery_optin,
+        project_id: String::new(),
+        relative_path: String::new(),
+        kind: Kind::Generic,
+        mode: DEFAULT_MODE,
     }
 }
 

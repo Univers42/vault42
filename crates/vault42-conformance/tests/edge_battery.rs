@@ -16,20 +16,24 @@
 
 use proptest::prelude::*;
 use vault42_core::{
-    fingerprint, open, seal, verify_envelope_author, Envelope, Identity, Metadata, ReadScope,
-    RecipientKind, RecipientPublicKey, Recipients,
+    fingerprint, open, seal, verify_envelope_author, Envelope, Identity, Kind, Metadata, ReadScope,
+    RecipientKind, RecipientPublicKey, Recipients, DEFAULT_MODE,
 };
 
 /// Build metadata for a case.
 fn meta(owner: &str, secret: &str, rev: u64, recovery: bool) -> Metadata {
     Metadata {
-        version: 1,
+        version: 2,
         secret_id: secret.to_string(),
         tenant: "t".to_string(),
         owner: owner.to_string(),
         rev,
         content_type: "opaque".to_string(),
         recovery_optin: recovery,
+        project_id: String::new(),
+        relative_path: String::new(),
+        kind: Kind::Generic,
+        mode: DEFAULT_MODE,
     }
 }
 

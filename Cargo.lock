@@ -3452,10 +3452,16 @@ name = "vault42-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "base64",
  "hex",
+ "hmac",
  "r2d2",
  "r2d2_sqlite",
+ "reqwest",
  "rusqlite",
+ "serde",
+ "serde_json",
  "sha2",
  "thiserror 1.0.69",
  "tokio",
@@ -3463,9 +3469,11 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "vault42-core",
  "vault42-grobase",
  "vault42-proto",
+ "zeroize",
 ]
 
 [[package]]

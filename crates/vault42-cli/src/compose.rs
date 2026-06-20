@@ -16,18 +16,24 @@
 //! resulting opaque bytes ever leave the machine.
 
 use crate::derive;
-use vault42_core::{seal, Identity, Metadata, RecipientPublicKey, Recipients};
+use vault42_core::{seal, Identity, Kind, Metadata, RecipientPublicKey, Recipients, DEFAULT_MODE};
 
-/// Build metadata for `(owner, path, rev)` with a deterministic secret id.
+/// Build v2 metadata for `(owner, path, rev)` with a deterministic secret id. The
+/// path-aware fields stay at their non-project defaults (the umbrella CLI populates
+/// them for project push/pull; a leaf's `relative_path` always stays empty on the wire).
 fn metadata(owner: &str, path: &str, rev: u64) -> Metadata {
     Metadata {
-        version: 1,
+        version: 2,
         secret_id: derive::secret_id(owner, path),
         tenant: "self".to_string(),
         owner: owner.to_string(),
         rev,
         content_type: "opaque".to_string(),
         recovery_optin: false,
+        project_id: String::new(),
+        relative_path: String::new(),
+        kind: Kind::Generic,
+        mode: DEFAULT_MODE,
     }
 }
 

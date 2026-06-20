@@ -132,7 +132,8 @@ fn append_event(c: &rusqlite::Connection, owner: &str, event: &Event) -> Result<
 }
 
 /// `sha256` over the previous hash and a length-prefixed canonical form of the event.
-fn chain_hash(prev: &str, event: &Event, seq: i64, ts: i64) -> String {
+/// `pub(crate)` so the grobase-backed store links the same chain over `/query/v1`.
+pub(crate) fn chain_hash(prev: &str, event: &Event, seq: i64, ts: i64) -> String {
     let (seq_b, ts_b) = (seq.to_le_bytes(), ts.to_le_bytes());
     let fields: [&[u8]; 6] = [
         prev.as_bytes(),

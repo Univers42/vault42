@@ -26,18 +26,24 @@ mod authn;
 mod config;
 #[cfg(test)]
 mod e2e;
+mod grobase_store;
 mod grpc;
+mod jwt;
 mod ops_read;
 mod ops_write;
 mod principal;
 mod secret_read;
 mod secret_write;
 mod store;
+mod store_trait;
 mod svc;
 
 use config::Config;
+use grobase_store::GrobaseStore;
 use std::process::ExitCode;
+use std::sync::Arc;
 use store::Store;
+use store_trait::SecretStore;
 use svc::{connect_grobase, VaultSvc};
 use vault42_proto::vault::v1::vault_server::VaultServer;
 
@@ -70,7 +76,7 @@ fn run() -> anyhow::Result<()> {
 
 /// Build the service from config and serve gRPC until the process is terminated.
 async fn serve(cfg: Config) -> anyhow::Result<()> {
-    let store = Store::open(&cfg.db_path, cfg.max_secrets)?;
+    let store = select_store(&cfg)?;
     let grobase = match &cfg.grobase {
         Some(grobase_cfg) => Some(connect_grobase(grobase_cfg)?),
         None => None,
@@ -83,6 +89,25 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
         .serve(addr)
         .await?;
     Ok(())
+}
+
+/// Select the storage backend: grobase over `/query/v1` when its config is present
+/// (the connected default), else the embedded SQLite store (offline `nano`).
+fn select_store(cfg: &Config) -> anyhow::Result<Arc<dyn SecretStore>> {
+    if let Some(gs) = &cfg.grobase_store {
+        tracing::info!("vault42-server storage backend: grobase (/query/v1)");
+        let store = GrobaseStore::new(
+            gs.kong.clone(),
+            gs.anon_key.clone(),
+            gs.app_key.clone(),
+            gs.db_id.clone(),
+            gs.jwt_secret.clone(),
+            gs.jwt_ttl,
+        )?;
+        return Ok(Arc::new(store));
+    }
+    tracing::info!("vault42-server storage backend: embedded sqlite");
+    Ok(Arc::new(Store::open(&cfg.db_path, cfg.max_secrets)?))
 }
 
 /// TCP-probe the configured listener for the container/fly health check.

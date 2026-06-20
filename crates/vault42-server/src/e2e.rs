@@ -22,8 +22,8 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::{Channel, Server};
 use tonic::{Code, Request};
 use vault42_core::{
-    issue_contract, open, seal, AuthorPublicKey, Contract, Envelope, Identity, Metadata, ReadScope,
-    Recipients,
+    issue_contract, open, seal, AuthorPublicKey, Contract, Envelope, Identity, Kind, Metadata,
+    ReadScope, Recipients, DEFAULT_MODE,
 };
 use vault42_proto::vault::v1::vault_client::VaultClient;
 use vault42_proto::vault::v1::vault_server::VaultServer;
@@ -50,7 +50,7 @@ async fn spawn(store: Store) -> std::net::SocketAddr {
         .await
         .expect("bind");
     let addr = listener.local_addr().expect("addr");
-    let svc = VaultSvc::new(store, 120, None, None);
+    let svc = VaultSvc::new(std::sync::Arc::new(store), 120, None, None);
     tokio::spawn(async move {
         Server::builder()
             .add_service(VaultServer::new(svc))
@@ -67,7 +67,7 @@ async fn spawn_gated(store: Store, authority_pub: [u8; 32]) -> std::net::SocketA
         .await
         .expect("bind");
     let addr = listener.local_addr().expect("addr");
-    let svc = VaultSvc::new(store, 120, None, Some(authority_pub));
+    let svc = VaultSvc::new(std::sync::Arc::new(store), 120, None, Some(authority_pub));
     tokio::spawn(async move {
         Server::builder()
             .add_service(VaultServer::new(svc))
@@ -107,13 +107,17 @@ fn sid(owner: &str, path: &str) -> String {
 /// Seal `plaintext` for `id` under `owner`/`path`/`rev`, returning the wire bytes.
 fn seal_for(id: &Identity, owner: &str, path: &str, rev: u64, plaintext: &[u8]) -> Vec<u8> {
     let meta = Metadata {
-        version: 1,
+        version: 2,
         secret_id: sid(owner, path),
         tenant: "self".into(),
         owner: owner.into(),
         rev,
         content_type: "opaque".into(),
         recovery_optin: false,
+        project_id: String::new(),
+        relative_path: String::new(),
+        kind: Kind::Generic,
+        mode: DEFAULT_MODE,
     };
     let recipients = Recipients {
         users: &[id.encryption_public()],
@@ -352,13 +356,17 @@ async fn share_round_trips_to_a_friend() {
     let shared_path = format!("shared/{}/note", principal_of(&alice));
     let secret = b"shared-secret-99";
     let meta = Metadata {
-        version: 1,
+        version: 2,
         secret_id: sid(&bob_owner, &shared_path),
         tenant: "self".into(),
         owner: bob_owner.clone(),
         rev: 1,
         content_type: "opaque".into(),
         recovery_optin: false,
+        project_id: String::new(),
+        relative_path: String::new(),
+        kind: Kind::Generic,
+        mode: DEFAULT_MODE,
     };
     let recipients = Recipients {
         users: &[bob.encryption_public(), alice.encryption_public()],
