@@ -32,6 +32,8 @@ pub struct App {
     pub authority: Authority,
     pub store: Store,
     pub register_token: Option<String>,
+    pub require_otp: bool,
+    pub otp_jwt_secret: Option<Vec<u8>>,
 }
 
 #[derive(Deserialize)]
@@ -40,6 +42,10 @@ pub struct RegisterReq {
     author_pubkey: String,
     #[serde(default)]
     token: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    otp_proof: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -88,6 +94,9 @@ async fn register(
             ));
         }
     }
+    if app.require_otp {
+        require_otp_proof(&app, &req)?;
+    }
     if !valid_tenant(&req.tenant) {
         return Err((StatusCode::BAD_REQUEST, "invalid tenant name".into()));
     }
@@ -109,4 +118,20 @@ async fn register(
         tenant: req.tenant,
         expires_at,
     }))
+}
+
+/// Require + verify the email-OTP proof (when `VAULT42_CONTRACT_REQUIRE_OTP` is on):
+/// both `email` and `otp_proof` must be present and the proof must verify against the
+/// shared secret for that email — else 401. This makes the OTP a server-enforced gate.
+fn require_otp_proof(app: &App, req: &RegisterReq) -> Result<(), (StatusCode, String)> {
+    let secret = app.otp_jwt_secret.as_deref().ok_or((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "otp required but GOTRUE_JWT_SECRET not configured".into(),
+    ))?;
+    let email = req.email.as_deref().filter(|e| !e.is_empty());
+    let (Some(email), Some(proof)) = (email, req.otp_proof.as_deref()) else {
+        return Err((StatusCode::UNAUTHORIZED, "email + otp_proof required".into()));
+    };
+    crate::otp::verify_otp_proof(proof, email, secret)
+        .map_err(|reason| (StatusCode::UNAUTHORIZED, format!("otp: {reason}")))
 }
