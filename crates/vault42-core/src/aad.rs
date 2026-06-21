@@ -27,7 +27,9 @@
 use crate::metadata::Metadata;
 
 /// Domain separator so AAD bytes can never collide with any other signed context.
-const DOMAIN: &[u8] = b"vault42/aad/v1";
+/// Bumped v1→v2 when the path-aware metadata fields joined the framing: a v1
+/// envelope can never be mistaken for a v2 one (the domain tag itself differs).
+const DOMAIN: &[u8] = b"vault42/aad/v2";
 
 /// Append one length-prefixed field: `<len> ':' <value> '\n'`.
 fn frame(out: &mut Vec<u8>, value: &[u8]) {
@@ -51,6 +53,11 @@ pub fn canonical(meta: &Metadata, recipients: &[([u8; 16], u8)]) -> Vec<u8> {
     frame(&mut out, &meta.rev.to_le_bytes());
     frame(&mut out, meta.content_type.as_bytes());
     frame(&mut out, &[meta.recovery_optin as u8]);
+    // sec: path-aware fields are length-prefixed and bound into the author signature
+    frame(&mut out, meta.project_id.as_bytes());
+    frame(&mut out, meta.relative_path.as_bytes());
+    frame(&mut out, &[meta.kind as u8]);
+    frame(&mut out, &meta.mode.to_le_bytes());
     frame(&mut out, &(sorted.len() as u64).to_le_bytes());
     for (id, kind) in &sorted {
         frame(&mut out, id);
@@ -66,13 +73,17 @@ mod tests {
 
     fn meta() -> Metadata {
         Metadata {
-            version: 1,
+            version: 2,
             secret_id: "s-1".into(),
             tenant: "t-1".into(),
             owner: "api-key:abc".into(),
             rev: 3,
             content_type: "env".into(),
             recovery_optin: true,
+            project_id: "p-1".into(),
+            relative_path: String::new(),
+            kind: crate::metadata::Kind::Generic,
+            mode: crate::metadata::DEFAULT_MODE,
         }
     }
 
@@ -105,5 +116,54 @@ mod tests {
         let user = canonical(&meta(), &[([1u8; 16], 0)]);
         let recovery = canonical(&meta(), &[([1u8; 16], 1)]);
         assert_ne!(user, recovery, "kind is bound: relabel must change the AAD");
+    }
+
+    fn full_v2_meta() -> Metadata {
+        Metadata {
+            version: 2,
+            secret_id: "sec-golden".into(),
+            tenant: "tenant-golden".into(),
+            owner: "user:11111111-1111-5111-8111-111111111111".into(),
+            rev: 7,
+            content_type: "env".into(),
+            recovery_optin: true,
+            project_id: "p-golden".into(),
+            relative_path: "config/db.env".into(),
+            kind: crate::metadata::Kind::EnvFile,
+            mode: 0o600,
+        }
+    }
+
+    /// Golden vector: pins the FROZEN v2 canonical-AAD bytes. If this digest ever
+    /// changes, the wire format changed and every prior signature is invalidated —
+    /// the failure is the intended alarm, not a value to blindly update.
+    #[test]
+    fn format_v2_aad_is_stable() {
+        let bytes = canonical(&full_v2_meta(), &[([7u8; 16], 1), ([3u8; 16], 0)]);
+        let digest = blake3::hash(&bytes).to_hex().to_string();
+        assert_eq!(
+            digest, "efe69d84f5bd4baff7c60252de86bdd868632fc9aa7a4d7c4acef7314bf0cbba",
+            "v2 canonical AAD changed — frozen format break"
+        );
+    }
+
+    #[test]
+    fn path_fields_each_change_aad() {
+        let base = canonical(&meta(), &[([1u8; 16], 0)]);
+        let mut project = meta();
+        project.project_id = "p-2".into();
+        let mut path = meta();
+        path.relative_path = "config/db.env".into();
+        let mut kind = meta();
+        kind.kind = crate::metadata::Kind::Manifest;
+        let mut mode = meta();
+        mode.mode = 0o644;
+        for changed in [&project, &path, &kind, &mode] {
+            assert_ne!(
+                base,
+                canonical(changed, &[([1u8; 16], 0)]),
+                "every path-aware field must be bound into the AAD"
+            );
+        }
     }
 }

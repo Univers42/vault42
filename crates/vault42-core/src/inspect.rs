@@ -55,13 +55,17 @@ mod tests {
 
     fn meta() -> Metadata {
         Metadata {
-            version: 1,
+            version: 2,
             secret_id: "s-1".into(),
             tenant: "self".into(),
             owner: "owner-1".into(),
             rev: 1,
             content_type: "env".into(),
             recovery_optin: false,
+            project_id: String::new(),
+            relative_path: String::new(),
+            kind: crate::metadata::Kind::Generic,
+            mode: crate::metadata::DEFAULT_MODE,
         }
     }
 

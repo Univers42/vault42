@@ -17,6 +17,7 @@
 
 mod authority;
 mod config;
+mod otp;
 mod routes;
 mod signing;
 mod store;
@@ -63,6 +64,8 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
         authority,
         store,
         register_token: cfg.register_token,
+        require_otp: cfg.require_otp,
+        otp_jwt_secret: cfg.otp_jwt_secret,
     });
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     axum::serve(listener, router(app)).await?;

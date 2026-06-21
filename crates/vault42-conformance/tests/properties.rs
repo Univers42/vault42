@@ -16,17 +16,21 @@
 //! Cheap key generation per case keeps the suite fast; 64 cases is enough signal.
 
 use proptest::prelude::*;
-use vault42_core::{open, seal, Identity, Metadata, ReadScope, Recipients};
+use vault42_core::{open, seal, Identity, Kind, Metadata, ReadScope, Recipients, DEFAULT_MODE};
 
 fn metadata(rev: u64) -> Metadata {
     Metadata {
-        version: 1,
+        version: 2,
         secret_id: "secret".into(),
         tenant: "tenant".into(),
         owner: "api-key:abc".into(),
         rev,
         content_type: "env".into(),
         recovery_optin: false,
+        project_id: String::new(),
+        relative_path: String::new(),
+        kind: Kind::Generic,
+        mode: DEFAULT_MODE,
     }
 }
 

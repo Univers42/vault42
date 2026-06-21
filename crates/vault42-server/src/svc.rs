@@ -18,14 +18,15 @@
 use crate::audit_store::Event;
 use crate::config::GrobaseCfg;
 use crate::principal::Principal;
-use crate::store::Store;
+use crate::store_trait::SecretStore;
 use std::sync::Arc;
 use vault42_grobase::{AuditEvent, GrobaseClient};
 
-/// The vault42 gRPC service.
+/// The vault42 gRPC service. The store is the injected `SecretStore` port (embedded
+/// SQLite for `nano`, grobase over `/query/v1` for the connected default).
 #[derive(Clone)]
 pub struct VaultSvc {
-    pub(crate) store: Store,
+    pub(crate) store: Arc<dyn SecretStore>,
     pub(crate) skew_secs: i64,
     pub(crate) grobase: Option<Arc<GrobaseClient>>,
     pub(crate) contract_pub: Option<[u8; 32]>,
@@ -35,7 +36,7 @@ impl VaultSvc {
     /// Build the service from its injected dependencies. `contract_pub`, when set, makes
     /// every request require a valid authority contract (managed multi-tenancy).
     pub fn new(
-        store: Store,
+        store: Arc<dyn SecretStore>,
         skew_secs: i64,
         grobase: Option<GrobaseClient>,
         contract_pub: Option<[u8; 32]>,

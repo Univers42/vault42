@@ -15,10 +15,22 @@
 //! `INTERNAL_SERVICE_TOKEN` set, the server binds callers to a grobase tenant and
 //! mirrors audit there; without them it runs standalone on its own Ed25519 identity.
 
-/// Optional private-grobase connection.
+/// Optional private-grobase connection (the control-plane audit/decide hop).
 pub struct GrobaseCfg {
     pub url: String,
     pub token: Vec<u8>,
+}
+
+/// The grobase-backed storage connection: the Kong front door, the public + app API
+/// keys, the `vault42_secrets` mount id, and the JWT secret used to mint per-owner
+/// sessions. Present (and selected) only when storage is delegated to grobase.
+pub struct GrobaseStoreCfg {
+    pub kong: String,
+    pub anon_key: String,
+    pub app_key: String,
+    pub db_id: String,
+    pub jwt_secret: Vec<u8>,
+    pub jwt_ttl: i64,
 }
 
 /// The resolved server configuration.
@@ -27,20 +39,28 @@ pub struct Config {
     pub db_path: String,
     pub skew_secs: i64,
     pub grobase: Option<GrobaseCfg>,
+    pub grobase_store: Option<GrobaseStoreCfg>,
     pub contract_pub: Option<[u8; 32]>,
     pub max_secrets: i64,
 }
 
 impl Config {
-    /// Read the configuration from the environment, applying defaults.
+    /// Read the configuration from the environment, applying defaults. Storage is the
+    /// grobase backend when its env is complete and `VAULT42_STORE != sqlite`; otherwise
+    /// the embedded SQLite store (the offline `nano` default).
     pub fn from_env() -> Self {
         let host = env("VAULT42_HOST", "0.0.0.0");
         let port = env("VAULT42_PORT", "8443");
+        let grobase_store = match env("VAULT42_STORE", "").as_str() {
+            "sqlite" => None,
+            _ => grobase_store_cfg(),
+        };
         Self {
             bind: format!("{host}:{port}"),
             db_path: env("VAULT42_DB", "/data/vault42.db"),
             skew_secs: env("VAULT42_AUTH_SKEW_SECS", "120").parse().unwrap_or(120),
             grobase: grobase_cfg(),
+            grobase_store,
             contract_pub: contract_pub(),
             max_secrets: env("VAULT42_MAX_SECRETS", "0").parse().unwrap_or(0),
         }
@@ -68,5 +88,24 @@ fn grobase_cfg() -> Option<GrobaseCfg> {
     Some(GrobaseCfg {
         url,
         token: token.into_bytes(),
+    })
+}
+
+/// Build the grobase storage config iff every required var is present: the Kong URL,
+/// the public + app API keys, the mount id, and the JWT secret (`JWT_TTL_SECS`
+/// defaults to one hour).
+fn grobase_store_cfg() -> Option<GrobaseStoreCfg> {
+    let kong = std::env::var("GROBASE_QUERY_URL").ok()?;
+    let anon_key = std::env::var("GROBASE_ANON_KEY").ok()?;
+    let app_key = std::env::var("GROBASE_APP_KEY").ok()?;
+    let db_id = std::env::var("GROBASE_DB_ID").ok()?;
+    let jwt_secret = std::env::var("JWT_SECRET").ok()?;
+    Some(GrobaseStoreCfg {
+        kong,
+        anon_key,
+        app_key,
+        db_id,
+        jwt_secret: jwt_secret.into_bytes(),
+        jwt_ttl: env("JWT_TTL_SECS", "3600").parse().unwrap_or(3600),
     })
 }
