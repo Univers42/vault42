@@ -2,10 +2,31 @@
 [advisories]
 version = 2
 yanked = "deny"
+# Each entry is an assessed advisory with no available drop-in fix; the comment
+# names why it is accepted and the upgrade path that lets us delete the ignore.
+ignore = [
+    # russh 0.45 → only fix is >=0.60.3, which merges russh-keys into russh (a
+    # breaking API rewrite of vault42-ssh). Tracked as a follow-up; the SSH edge
+    # is auth-only and not exposed to untrusted memory pressure in our deployment.
+    "RUSTSEC-2026-0154",
+    "RUSTSEC-2026-0153",
+    # rsa Marvin-attack timing sidechannel — no patched release exists; pulled in
+    # transitively by russh-keys. Only exploitable with attacker-observable timing;
+    # removed once russh is upgraded off the rsa path.
+    "RUSTSEC-2023-0071",
+    # bincode 1.3.3 is intentionally frozen (team ceased dev); no successor on 1.x.
+    "RUSTSEC-2025-0141",
+    # rustls-pemfile is archived (folded into rustls-pki-types); pulled by tonic 0.12.
+    "RUSTSEC-2025-0134",
+]
 
 [bans]
 multiple-versions = "warn"
+# Deny real crates.io wildcard deps, but exempt intra-workspace path deps:
+# `{ path = "../vault42-core" }` declares no version, which cargo-deny reads as a
+# wildcard. allow-wildcard-paths keeps the ban for external crates only.
 wildcards = "deny"
+allow-wildcard-paths = true
 
 [licenses]
 version = 2
@@ -20,8 +41,10 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
-    "AGPL-3.0",
+    # CA trust-store data (webpki-roots) — permissive, AGPL-compatible data license.
+    "CDLA-Permissive-2.0",
+    # The workspace's own crates declare SPDX "AGPL-3.0-only" (not bare "AGPL-3.0").
+    "AGPL-3.0-only",
     "CC0-1.0",
 ]
 confidence-threshold = 0.9
