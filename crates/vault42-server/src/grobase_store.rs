@@ -20,6 +20,7 @@
 
 use crate::audit_store::{chain_hash, AuditRow, Event};
 use crate::jwt;
+use crate::scope_store::{ScopeKeyPut, ScopeKeyRow};
 use crate::secret_read::SecretRow;
 use crate::secret_write::PutSecret;
 use crate::store::StoreError;
@@ -33,6 +34,7 @@ use zeroize::Zeroizing;
 
 const SECRETS_TABLE: &str = "vault42_secrets";
 const AUDIT_TABLE: &str = "vault42_audit";
+const SCOPE_KEYS_TABLE: &str = "vault42_scope_keys";
 
 /// A grobase storage backend. Holds the Kong endpoint, the public + app API keys, the
 /// mount id, and the co-deployed JWT secret used to mint per-owner sessions.
@@ -227,6 +229,52 @@ impl SecretStore for GrobaseStore {
             .filter(|row| row.ts >= since)
             .collect())
     }
+
+    async fn put_scope_key(&self, put: ScopeKeyPut) -> Result<(), StoreError> {
+        let data = json!({
+            "scope_id": put.scope_id,
+            "epoch": put.epoch,
+            "granted_blob": put.granted_blob,
+            "granter_pubkey": put.granter_pubkey,
+            "wrapped_at": now_unix(),
+        });
+        self.exec(
+            &put.owner,
+            SCOPE_KEYS_TABLE,
+            json!({"op": "insert", "data": data}),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn get_scope_key(
+        &self,
+        owner: &str,
+        scope_id: &str,
+        epoch: i64,
+    ) -> Result<Option<ScopeKeyRow>, StoreError> {
+        let filter = json!({ "scope_id": scope_id, "epoch": epoch });
+        let body =
+            json!({"op": "list", "filter": filter, "sort": {"wrapped_at": "desc"}, "limit": 1});
+        let resp = self.exec(owner, SCOPE_KEYS_TABLE, body).await?;
+        Ok(resp.rows.first().map(row_to_scope_key))
+    }
+
+    async fn list_scope_members(
+        &self,
+        owner: &str,
+        scope_id: &str,
+        epoch: i64,
+    ) -> Result<Vec<(String, i64)>, StoreError> {
+        let filter = json!({ "scope_id": scope_id, "epoch": epoch });
+        let body = json!({"op": "list", "filter": filter, "limit": 500});
+        let resp = self.exec(owner, SCOPE_KEYS_TABLE, body).await?;
+        Ok(resp
+            .rows
+            .iter()
+            .map(|row| (owner.to_string(), field_i64(row, "wrapped_at")))
+            .collect())
+    }
 }
 
 /// Current Unix time in seconds — the row/audit timestamp + JWT `iat` source.
@@ -250,6 +298,15 @@ fn row_to_secret(row: &Value) -> Result<SecretRow, StoreError> {
         envelope,
         author_pubkey,
     })
+}
+
+/// Project a `/query/v1` row into a `ScopeKeyRow`. The blob and granter key are already
+/// base64 TEXT (stored opaquely), so no decode is needed here.
+fn row_to_scope_key(row: &Value) -> ScopeKeyRow {
+    ScopeKeyRow {
+        granted_blob: field_str(row, "granted_blob"),
+        granter_pubkey: field_str(row, "granter_pubkey"),
+    }
 }
 
 /// Project a `/query/v1` row into an `AuditRow`.

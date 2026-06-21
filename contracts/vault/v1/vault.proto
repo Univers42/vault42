@@ -18,6 +18,11 @@ service Vault {
   rpc Audit(AuditRequest) returns (stream AuditEvent);
   rpc Unseal(UnsealRequest) returns (UnsealResponse);
   rpc Whoami(WhoamiRequest) returns (WhoamiResponse);
+  // Scope-key surface (KEK hierarchy) — gated OFF by default (VAULT42_SCOPE_KEYS_ENABLED);
+  // when off the server returns UNIMPLEMENTED so the wire stays byte-parity.
+  rpc WrapScopeKey(WrapScopeKeyRequest) returns (WrapScopeKeyResponse);
+  rpc GetScopeKey(GetScopeKeyRequest) returns (GetScopeKeyResponse);
+  rpc ListScopeMembers(ListScopeMembersRequest) returns (ListScopeMembersResponse);
 }
 
 // expected_prev_rev gives optimistic concurrency: the server writes only if the
@@ -104,3 +109,41 @@ message WhoamiResponse {
   repeated string roles = 2;
   uint32 aal = 3;
 }
+
+// A granting admin deposits a member's wrapped scope private key. `granted_blob` is the
+// OPAQUE serialized vault42-core GrantedScopeKey (base64-free on the wire; raw bytes); the
+// server verifies the granter signature over it WITHOUT decrypting, then stores it under
+// `member_id` — a FOREIGN-owner deposit (like Share). `member_id`/`scope_id` are the
+// storage owner key (the member's hex principal) and the scope identity. `granter_pubkey`
+// is the granter's 32-byte Ed25519 key the server verifies the grant signature against.
+message WrapScopeKeyRequest {
+  string member_id = 1;
+  string scope_id = 2;
+  uint32 epoch = 3;
+  bytes granted_blob = 4;
+  bytes granter_pubkey = 5;
+}
+message WrapScopeKeyResponse { bool stored = 1; }
+
+// A member fetches THEIR OWN wrapped scope key (owner = caller). The server scopes the
+// read to the caller, so a member can never read another member's wrap.
+message GetScopeKeyRequest {
+  string scope_id = 1;
+  uint32 epoch = 2;
+}
+message GetScopeKeyResponse {
+  bytes granted_blob = 1;
+  bytes granter_pubkey = 2;
+}
+
+// List the provisioned members of a scope/epoch — bounded to what the caller may see
+// (a member of the scope). Returns each member's storage id and when it was wrapped.
+message ListScopeMembersRequest {
+  string scope_id = 1;
+  uint32 epoch = 2;
+}
+message ScopeMember {
+  string member_id = 1;
+  int64 wrapped_at = 2;
+}
+message ListScopeMembersResponse { repeated ScopeMember members = 1; }

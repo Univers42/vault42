@@ -17,6 +17,7 @@
 //! only ever holds opaque envelopes — it never decrypts.
 
 use crate::audit_store::{AuditRow, Event};
+use crate::scope_store::{ScopeKeyPut, ScopeKeyRow};
 use crate::secret_read::SecretRow;
 use crate::secret_write::PutSecret;
 use crate::store::{Store, StoreError};
@@ -56,6 +57,25 @@ pub trait SecretStore: Send + Sync {
 
     /// Read `owner`'s audit events with `ts >= since`, sequence-ordered.
     async fn audit_list(&self, owner: &str, since: i64) -> Result<Vec<AuditRow>, StoreError>;
+
+    /// Deposit a scope-key grant under `put.owner` (a foreign-owner write, like share).
+    async fn put_scope_key(&self, put: ScopeKeyPut) -> Result<(), StoreError>;
+
+    /// Fetch `owner`'s own grant for `(scope_id, epoch)`, or `None` (owner-scoped).
+    async fn get_scope_key(
+        &self,
+        owner: &str,
+        scope_id: &str,
+        epoch: i64,
+    ) -> Result<Option<ScopeKeyRow>, StoreError>;
+
+    /// List `(member_id, wrapped_at)` the caller may see for `(scope_id, epoch)`.
+    async fn list_scope_members(
+        &self,
+        owner: &str,
+        scope_id: &str,
+        epoch: i64,
+    ) -> Result<Vec<(String, i64)>, StoreError>;
 }
 
 /// The embedded SQLite store IS a `SecretStore`; each method forwards to the inherent
@@ -99,5 +119,27 @@ impl SecretStore for Store {
 
     async fn audit_list(&self, owner: &str, since: i64) -> Result<Vec<AuditRow>, StoreError> {
         Store::audit_list(self, owner, since).await
+    }
+
+    async fn put_scope_key(&self, put: ScopeKeyPut) -> Result<(), StoreError> {
+        Store::put_scope_key(self, put).await
+    }
+
+    async fn get_scope_key(
+        &self,
+        owner: &str,
+        scope_id: &str,
+        epoch: i64,
+    ) -> Result<Option<ScopeKeyRow>, StoreError> {
+        Store::get_scope_key(self, owner, scope_id, epoch).await
+    }
+
+    async fn list_scope_members(
+        &self,
+        owner: &str,
+        scope_id: &str,
+        epoch: i64,
+    ) -> Result<Vec<(String, i64)>, StoreError> {
+        Store::list_scope_members(self, owner, scope_id, epoch).await
     }
 }

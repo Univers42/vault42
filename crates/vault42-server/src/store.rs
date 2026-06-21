@@ -42,7 +42,11 @@ CREATE INDEX IF NOT EXISTS secrets_owner_path ON secrets(owner, path);\
 CREATE TABLE IF NOT EXISTS audit (\
   owner TEXT NOT NULL, seq INTEGER NOT NULL, ts INTEGER NOT NULL, actor TEXT NOT NULL,\
   action TEXT NOT NULL, target TEXT NOT NULL, prev_hash TEXT NOT NULL, hash TEXT NOT NULL,\
-  PRIMARY KEY (owner, seq));";
+  PRIMARY KEY (owner, seq));\
+CREATE TABLE IF NOT EXISTS scope_keys (\
+  owner TEXT NOT NULL, scope_id TEXT NOT NULL, epoch INTEGER NOT NULL,\
+  granted_blob TEXT NOT NULL, granter_pubkey TEXT NOT NULL, wrapped_at INTEGER NOT NULL,\
+  PRIMARY KEY (owner, scope_id, epoch));";
 
 /// A clonable handle to the SQLite connection pool. `max_secrets` caps the number of
 /// distinct paths one owner may create (0 = unlimited) — a guardrail against a

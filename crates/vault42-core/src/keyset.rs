@@ -25,9 +25,16 @@ use crate::error::{Error, Result};
 use crate::keyset_sig::canonical_grant;
 use crate::recipient::{self, RecipientKind, WrappedDek};
 use crate::seal::Recipients;
+use bincode::Options;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroizing;
+
+/// Upper bound on a serialized grant, enforced by the codec so a malicious server
+/// cannot drive an unbounded allocation through `from_bytes`. A grant is a few
+/// hundred bytes; 64 KiB is generous headroom.
+const MAX_GRANT_BYTES: u64 = 64 * 1024;
 
 /// The public half of a scope keyset: the scope identity, its key epoch, and the
 /// X25519 public key secrets are sealed to. `scope_id`/`epoch` are bound into every
@@ -40,6 +47,9 @@ pub struct ScopeKeyset {
 
 /// A scope private key wrapped to one member and signed by a granting admin. Holding
 /// this plus the member's X25519 secret yields the scope secret via `open_scope_key`.
+/// `Serialize`/`Deserialize` let the server store and verify it opaquely (it carries no
+/// scope secret in the clear — only the AEAD-wrapped material and the granter signature).
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GrantedScopeKey {
     pub scope_id: [u8; 16],
     pub epoch: u32,
@@ -47,6 +57,27 @@ pub struct GrantedScopeKey {
     pub wrapped: WrappedDek,
     pub granter_sig: Vec<u8>,
     pub granter_pubkey_id: [u8; 16],
+}
+
+/// The bincode configuration for a grant blob: fixed-int encoding (stable across
+/// versions) and a hard size limit (DoS bound).
+fn grant_codec() -> impl Options {
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .with_limit(MAX_GRANT_BYTES)
+}
+
+impl GrantedScopeKey {
+    /// Serialize to opaque bytes the server can store and round-trip. The blob carries
+    /// no scope secret in the clear — only AEAD-wrapped material the server cannot open.
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        grant_codec().serialize(self).map_err(|_| Error::Codec)
+    }
+
+    /// Deserialize from stored bytes; malformed/oversized input returns `Codec`.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        grant_codec().deserialize(bytes).map_err(|_| Error::Codec)
+    }
 }
 
 /// Generate a fresh scope keyset: a new X25519 keypair from the OS CSPRNG. Returns the
@@ -90,15 +121,12 @@ pub fn grant_scope_key(
     })
 }
 
-/// Pin the granter, verify the grant signature over the canonical bytes, then unwrap
-/// the scope secret with the member's X25519 key. A bad/forged signature or a mutated
-/// `scope_id`/`epoch`/`member_id`/`wrapped` returns `GranterMismatch`; a non-member
-/// secret fails the AEAD open. Returns the scope private key in a zeroizing buffer.
-pub fn open_scope_key(
-    g: &GrantedScopeKey,
-    member_secret: &StaticSecret,
-    granter_pub: &VerifyingKey,
-) -> Result<Zeroizing<[u8; 32]>> {
+/// Pin the granter and verify the grant signature over the canonical bytes WITHOUT
+/// unwrapping (no member secret needed). A bad/forged signature or a mutated
+/// `scope_id`/`epoch`/`member_id`/`wrapped` returns `GranterMismatch`. This is the gate
+/// the orchestrating server runs server-side before storing a grant — it proves the
+/// grant is granter-authentic while staying zero-knowledge (it never opens the wrap).
+pub fn verify_grant_signature(g: &GrantedScopeKey, granter_pub: &VerifyingKey) -> Result<()> {
     if g.granter_sig.len() != 64 || recipient::key_id(granter_pub.as_bytes()) != g.granter_pubkey_id
     {
         return Err(Error::GranterMismatch);
@@ -108,7 +136,19 @@ pub fn open_scope_key(
     let message = canonical_grant(&g.scope_id, g.epoch, &g.member_id, &g.wrapped);
     granter_pub
         .verify_strict(&message, &Signature::from_bytes(&signature))
-        .map_err(|_| Error::GranterMismatch)?;
+        .map_err(|_| Error::GranterMismatch)
+}
+
+/// Pin the granter, verify the grant signature over the canonical bytes, then unwrap
+/// the scope secret with the member's X25519 key. A bad/forged signature or a mutated
+/// `scope_id`/`epoch`/`member_id`/`wrapped` returns `GranterMismatch`; a non-member
+/// secret fails the AEAD open. Returns the scope private key in a zeroizing buffer.
+pub fn open_scope_key(
+    g: &GrantedScopeKey,
+    member_secret: &StaticSecret,
+    granter_pub: &VerifyingKey,
+) -> Result<Zeroizing<[u8; 32]>> {
+    verify_grant_signature(g, granter_pub)?;
     recipient::unwrap(&g.wrapped, member_secret)
 }
 
@@ -260,5 +300,48 @@ mod tests {
             open_scope_key(&grant, &member, &attacker.verifying_key()),
             Err(Error::GranterMismatch)
         ));
+    }
+
+    #[test]
+    fn verify_grant_signature_accepts_genuine_grant() {
+        let granter = SigningKey::generate(&mut OsRng);
+        let member_pub = PublicKey::from(&StaticSecret::random());
+        let (_keyset, scope_secret) = generate_keyset([9u8; 16], 3);
+        let grant =
+            grant_scope_key(&scope_secret, &member_pub, &granter, [9u8; 16], 3).expect("grant");
+        assert!(verify_grant_signature(&grant, &granter.verifying_key()).is_ok());
+    }
+
+    #[test]
+    fn verify_grant_signature_rejects_tamper_and_wrong_granter() {
+        let granter = SigningKey::generate(&mut OsRng);
+        let attacker = SigningKey::generate(&mut OsRng);
+        let member_pub = PublicKey::from(&StaticSecret::random());
+        let (_keyset, scope_secret) = generate_keyset([10u8; 16], 1);
+        let mut grant =
+            grant_scope_key(&scope_secret, &member_pub, &granter, [10u8; 16], 1).expect("grant");
+        assert!(matches!(
+            verify_grant_signature(&grant, &attacker.verifying_key()),
+            Err(Error::GranterMismatch)
+        ));
+        grant.granter_sig[0] ^= 0x01;
+        assert!(matches!(
+            verify_grant_signature(&grant, &granter.verifying_key()),
+            Err(Error::GranterMismatch)
+        ));
+    }
+
+    #[test]
+    fn grant_bytes_roundtrip_and_verify() {
+        let granter = SigningKey::generate(&mut OsRng);
+        let member_pub = PublicKey::from(&StaticSecret::random());
+        let (_keyset, scope_secret) = generate_keyset([11u8; 16], 7);
+        let grant =
+            grant_scope_key(&scope_secret, &member_pub, &granter, [11u8; 16], 7).expect("grant");
+        let bytes = grant.to_bytes().expect("to_bytes");
+        let back = GrantedScopeKey::from_bytes(&bytes).expect("from_bytes");
+        assert_eq!(back.scope_id, grant.scope_id);
+        assert_eq!(back.epoch, grant.epoch);
+        assert!(verify_grant_signature(&back, &granter.verifying_key()).is_ok());
     }
 }
