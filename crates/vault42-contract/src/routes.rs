@@ -130,7 +130,10 @@ fn require_otp_proof(app: &App, req: &RegisterReq) -> Result<(), (StatusCode, St
     ))?;
     let email = req.email.as_deref().filter(|e| !e.is_empty());
     let (Some(email), Some(proof)) = (email, req.otp_proof.as_deref()) else {
-        return Err((StatusCode::UNAUTHORIZED, "email + otp_proof required".into()));
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "email + otp_proof required".into(),
+        ));
     };
     crate::otp::verify_otp_proof(proof, email, secret)
         .map_err(|reason| (StatusCode::UNAUTHORIZED, format!("otp: {reason}")))

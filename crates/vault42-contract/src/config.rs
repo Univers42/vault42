@@ -42,7 +42,9 @@ impl Config {
                 .unwrap_or(365),
             register_token: std::env::var("VAULT42_REGISTER_TOKEN").ok(),
             require_otp: env("VAULT42_CONTRACT_REQUIRE_OTP", "false") == "true",
-            otp_jwt_secret: std::env::var("GOTRUE_JWT_SECRET").ok().map(String::into_bytes),
+            otp_jwt_secret: std::env::var("GOTRUE_JWT_SECRET")
+                .ok()
+                .map(String::into_bytes),
         }
     }
 }

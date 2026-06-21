@@ -50,7 +50,9 @@ fn verify_sig(secret: &[u8], header: &str, payload: &str, sig: &str) -> Result<(
 
 /// Check the proof's claims: `aud == otp-proof`, `otp == lower(email)`, and `exp`.
 fn verify_claims(payload: &str, email: &str) -> Result<(), String> {
-    let raw = URL_SAFE_NO_PAD.decode(payload).map_err(|_| "bad payload".to_string())?;
+    let raw = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|_| "bad payload".to_string())?;
     let claims: Value = serde_json::from_slice(&raw).map_err(|_| "bad claims".to_string())?;
     if claims.get("aud").and_then(Value::as_str) != Some("otp-proof") {
         return Err("wrong audience".into());
@@ -58,7 +60,10 @@ fn verify_claims(payload: &str, email: &str) -> Result<(), String> {
     if claims.get("otp").and_then(Value::as_str) != Some(email.to_lowercase().as_str()) {
         return Err("email mismatch".into());
     }
-    let exp = claims.get("exp").and_then(Value::as_i64).ok_or("missing exp")?;
+    let exp = claims
+        .get("exp")
+        .and_then(Value::as_i64)
+        .ok_or("missing exp")?;
     if exp < now_unix() - SKEW_SECS {
         return Err("proof expired".into());
     }
@@ -98,10 +103,30 @@ mod tests {
     #[test]
     fn wrong_secret_email_aud_expiry_reject() {
         let s = b"shared-secret";
-        assert!(verify_otp_proof(&mint(s, "a@x.test", "otp-proof", now_unix() + 300), "a@x.test", b"other").is_err());
-        assert!(verify_otp_proof(&mint(s, "a@x.test", "otp-proof", now_unix() + 300), "b@x.test", s).is_err());
-        assert!(verify_otp_proof(&mint(s, "a@x.test", "wrong-aud", now_unix() + 300), "a@x.test", s).is_err());
-        assert!(verify_otp_proof(&mint(s, "a@x.test", "otp-proof", now_unix() - 600), "a@x.test", s).is_err());
+        assert!(verify_otp_proof(
+            &mint(s, "a@x.test", "otp-proof", now_unix() + 300),
+            "a@x.test",
+            b"other"
+        )
+        .is_err());
+        assert!(verify_otp_proof(
+            &mint(s, "a@x.test", "otp-proof", now_unix() + 300),
+            "b@x.test",
+            s
+        )
+        .is_err());
+        assert!(verify_otp_proof(
+            &mint(s, "a@x.test", "wrong-aud", now_unix() + 300),
+            "a@x.test",
+            s
+        )
+        .is_err());
+        assert!(verify_otp_proof(
+            &mint(s, "a@x.test", "otp-proof", now_unix() - 600),
+            "a@x.test",
+            s
+        )
+        .is_err());
         assert!(verify_otp_proof("not.a.jwt.extra", "a@x.test", s).is_err());
     }
 }

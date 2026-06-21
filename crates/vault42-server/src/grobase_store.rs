@@ -82,7 +82,12 @@ impl GrobaseStore {
     }
 
     /// Execute one `/query/v1` operation on `table` as `owner` (a minted JWT scopes it).
-    async fn exec(&self, owner: &str, table: &str, body: Value) -> Result<QueryResponse, StoreError> {
+    async fn exec(
+        &self,
+        owner: &str,
+        table: &str,
+        body: Value,
+    ) -> Result<QueryResponse, StoreError> {
         let subject = jwt::owner_subject(owner);
         let token = jwt::mint(&self.jwt_secret, &subject, now_unix(), self.jwt_ttl)
             .map_err(|_| StoreError::Sql)?;
@@ -100,7 +105,10 @@ impl GrobaseStore {
         if !response.status().is_success() {
             return Err(StoreError::Sql);
         }
-        response.json::<QueryResponse>().await.map_err(|_| StoreError::Sql)
+        response
+            .json::<QueryResponse>()
+            .await
+            .map_err(|_| StoreError::Sql)
     }
 
     /// Read `owner`'s current head version for `path` (0 when absent) — the basis for
@@ -167,8 +175,12 @@ impl SecretStore for GrobaseStore {
             "author_pubkey": STANDARD.encode(&put.author_pubkey),
             "updated_at": now_unix(),
         });
-        self.exec(&put.owner, SECRETS_TABLE, json!({"op": "insert", "data": data}))
-            .await?;
+        self.exec(
+            &put.owner,
+            SECRETS_TABLE,
+            json!({"op": "insert", "data": data}),
+        )
+        .await?;
         Ok(next)
     }
 
@@ -183,7 +195,11 @@ impl SecretStore for GrobaseStore {
             filter["version"] = json!(version);
         }
         let resp = self
-            .exec(owner, SECRETS_TABLE, json!({"op": "delete", "filter": filter}))
+            .exec(
+                owner,
+                SECRETS_TABLE,
+                json!({"op": "delete", "filter": filter}),
+            )
             .await?;
         Ok(resp.row_count > 0)
     }

@@ -142,8 +142,7 @@ mod tests {
         let bytes = canonical(&full_v2_meta(), &[([7u8; 16], 1), ([3u8; 16], 0)]);
         let digest = blake3::hash(&bytes).to_hex().to_string();
         assert_eq!(
-            digest,
-            "efe69d84f5bd4baff7c60252de86bdd868632fc9aa7a4d7c4acef7314bf0cbba",
+            digest, "efe69d84f5bd4baff7c60252de86bdd868632fc9aa7a4d7c4acef7314bf0cbba",
             "v2 canonical AAD changed — frozen format break"
         );
     }
