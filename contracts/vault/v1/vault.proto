@@ -23,6 +23,7 @@ service Vault {
   rpc WrapScopeKey(WrapScopeKeyRequest) returns (WrapScopeKeyResponse);
   rpc GetScopeKey(GetScopeKeyRequest) returns (GetScopeKeyResponse);
   rpc ListScopeMembers(ListScopeMembersRequest) returns (ListScopeMembersResponse);
+  rpc RotateScope(RotateScopeRequest) returns (RotateScopeResponse);
 }
 
 // expected_prev_rev gives optimistic concurrency: the server writes only if the
@@ -147,3 +148,17 @@ message ScopeMember {
   int64 wrapped_at = 2;
 }
 message ListScopeMembersResponse { repeated ScopeMember members = 1; }
+
+// Forward-secure scope rotation. The caller has already re-sealed the scope's secrets to
+// a fresh scope keypair and re-wrapped the new scope key to the REMAINING members
+// client-side; `rewraps` carries one `WrapScopeKeyRequest` per remaining member, each
+// bound (granter signature + the request's `scope_id`/`epoch`) to `new_epoch`. The server
+// verifies every rewrap WITHOUT decrypting and persists them under `new_epoch`. A removed
+// member simply has no `new_epoch` wrap, so it can no longer reach the rotated secret —
+// forward secrecy by absence, not by deletion. Same flag gate as the other scope RPCs.
+message RotateScopeRequest {
+  string scope_id = 1;
+  uint32 new_epoch = 2;
+  repeated WrapScopeKeyRequest rewraps = 3;
+}
+message RotateScopeResponse { uint32 rewrapped = 1; }

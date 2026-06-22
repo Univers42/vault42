@@ -30,6 +30,7 @@ mod grobase_store;
 mod grpc;
 mod jwt;
 mod ops_read;
+mod ops_rotate;
 mod ops_scope;
 mod ops_write;
 mod principal;

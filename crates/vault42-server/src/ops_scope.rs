@@ -41,12 +41,29 @@ impl VaultSvc {
         caller: &Principal,
         req: WrapScopeKeyRequest,
     ) -> Result<WrapScopeKeyResponse, Status> {
+        let target = scope_target(&req);
+        self.store_one_rewrap(req, None).await?;
+        self.emit_audit(caller, "wrap_scope_key", &target).await;
+        Ok(WrapScopeKeyResponse { stored: true })
+    }
+
+    /// Verify one rewrap (granter signature + the blob's bound `scope_id`/`epoch` matching
+    /// the request) WITHOUT decrypting, then persist it base64-encoded under the member.
+    /// `pin_epoch`, when set, additionally requires the request's epoch to equal it, so a
+    /// rotation can refuse any rewrap not bound to the new epoch. No audit here — the
+    /// caller (`op_wrap_scope_key` per-wrap, `op_rotate_scope` per-batch) records it.
+    pub(crate) async fn store_one_rewrap(
+        &self,
+        req: WrapScopeKeyRequest,
+        pin_epoch: Option<u32>,
+    ) -> Result<(), Status> {
         let grant = GrantedScopeKey::from_bytes(&req.granted_blob)
             .map_err(|_| Status::invalid_argument("malformed scope-key grant"))?;
         let granter = granter_key(&req.granter_pubkey)?;
         verify_grant_signature(&grant, &granter)
             .map_err(|_| Status::permission_denied("scope-key grant signature invalid"))?;
         bind_request_to_grant(&grant, &req)?;
+        bind_rotation_epoch(req.epoch, pin_epoch)?;
         self.store
             .put_scope_key(ScopeKeyPut {
                 owner: req.member_id.clone(),
@@ -56,10 +73,7 @@ impl VaultSvc {
                 granter_pubkey: STANDARD.encode(&req.granter_pubkey),
             })
             .await
-            .map_err(map_store)?;
-        self.emit_audit(caller, "wrap_scope_key", &scope_target(&req))
-            .await;
-        Ok(WrapScopeKeyResponse { stored: true })
+            .map_err(map_store)
     }
 
     /// Fetch the caller's OWN wrap for `(scope_id, epoch)`, returning the opaque blob and
@@ -129,6 +143,17 @@ fn bind_request_to_grant(grant: &GrantedScopeKey, req: &WrapScopeKeyRequest) -> 
 /// The audit target string for a wrap: `member/scope@epoch`.
 fn scope_target(req: &WrapScopeKeyRequest) -> String {
     format!("{}/{}@{}", req.member_id, req.scope_id, req.epoch)
+}
+
+/// During a rotation, reject any rewrap whose epoch is not the new epoch, so a genuinely
+/// signed OLD-epoch grant cannot be smuggled into the new-epoch member set.
+fn bind_rotation_epoch(req_epoch: u32, pin_epoch: Option<u32>) -> Result<(), Status> {
+    match pin_epoch {
+        Some(new_epoch) if req_epoch != new_epoch => Err(Status::permission_denied(
+            "rewrap epoch does not match the rotation's new epoch",
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Decode a base64 TEXT column back to the raw bytes the wire carries.

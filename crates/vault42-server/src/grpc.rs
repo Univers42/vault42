@@ -27,8 +27,8 @@ use vault42_proto::vault::v1::{
     unseal_response, AuditRequest, Chunk, GetRequest, GetResponse, GetScopeKeyRequest,
     GetScopeKeyResponse, ListScopeMembersRequest, ListScopeMembersResponse, LsRequest, LsResponse,
     PushRequest, PushResponse, RmRequest, RmResponse, RotateKeysRequest, RotateKeysResponse,
-    ShareRequest, UnsealRequest, UnsealResponse, WhoamiRequest, WhoamiResponse,
-    WrapScopeKeyRequest, WrapScopeKeyResponse,
+    RotateScopeRequest, RotateScopeResponse, ShareRequest, UnsealRequest, UnsealResponse,
+    WhoamiRequest, WhoamiResponse, WrapScopeKeyRequest, WrapScopeKeyResponse,
 };
 
 type ChunkStream = Pin<Box<dyn Stream<Item = Result<Chunk, Status>> + Send>>;
@@ -245,6 +245,16 @@ impl Vault for VaultSvc {
             .op_list_scope_members(&caller, &r.scope_id, r.epoch)
             .await?;
         Ok(Response::new(ListScopeMembersResponse { members }))
+    }
+
+    async fn rotate_scope(
+        &self,
+        request: Request<RotateScopeRequest>,
+    ) -> Result<Response<RotateScopeResponse>, Status> {
+        let caller = self.authn_scope(request.metadata(), "/vault.v1.Vault/RotateScope")?;
+        self.op_rotate_scope(&caller, request.into_inner())
+            .await
+            .map(Response::new)
     }
 }
 
