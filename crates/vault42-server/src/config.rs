@@ -42,6 +42,7 @@ pub struct Config {
     pub grobase_store: Option<GrobaseStoreCfg>,
     pub contract_pub: Option<[u8; 32]>,
     pub max_secrets: i64,
+    pub scope_keys_enabled: bool,
 }
 
 impl Config {
@@ -63,8 +64,15 @@ impl Config {
             grobase_store,
             contract_pub: contract_pub(),
             max_secrets: env("VAULT42_MAX_SECRETS", "0").parse().unwrap_or(0),
+            scope_keys_enabled: flag("VAULT42_SCOPE_KEYS_ENABLED"),
         }
     }
+}
+
+/// Read a boolean feature flag (OFF unless explicitly "1" or "true"). Default OFF keeps
+/// the wire byte-parity with the OSS edition.
+fn flag(key: &str) -> bool {
+    matches!(env(key, "").as_str(), "1" | "true")
 }
 
 /// Read an environment variable with a default.

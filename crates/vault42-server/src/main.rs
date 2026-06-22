@@ -26,12 +26,17 @@ mod authn;
 mod config;
 #[cfg(test)]
 mod e2e;
+mod env_store;
 mod grobase_store;
 mod grpc;
 mod jwt;
+mod ops_env;
 mod ops_read;
+mod ops_rotate;
+mod ops_scope;
 mod ops_write;
 mod principal;
+mod scope_store;
 mod secret_read;
 mod secret_write;
 mod store;
@@ -81,7 +86,8 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
         Some(grobase_cfg) => Some(connect_grobase(grobase_cfg)?),
         None => None,
     };
-    let svc = VaultSvc::new(store, cfg.skew_secs, grobase, cfg.contract_pub);
+    let svc = VaultSvc::new(store, cfg.skew_secs, grobase, cfg.contract_pub)
+        .with_scope_keys(cfg.scope_keys_enabled);
     let addr = cfg.bind.parse()?;
     tracing::info!(%addr, "vault42-server listening");
     tonic::transport::Server::builder()

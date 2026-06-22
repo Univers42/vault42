@@ -60,6 +60,16 @@ pub enum Error {
     /// A signed contract token has passed its expiry.
     #[error("vault42-core: contract expired")]
     Expired,
+    /// A scope-key grant's granter signature did not verify, or its pinned granter
+    /// fingerprint did not match — including a mutated scope_id/epoch/member/wrapped.
+    #[error("vault42-core: scope-key grant signature does not match the granter")]
+    GranterMismatch,
+    /// No scope-key grant was found for the requested scope/member.
+    #[error("vault42-core: no scope-key grant for this scope")]
+    ScopeKeyNotGranted,
+    /// A scope-key grant's epoch does not match the requested scope keyset epoch.
+    #[error("vault42-core: scope-key grant epoch does not match")]
+    EpochMismatch,
 }
 
 /// The crate-wide result alias (kernel rule: `Result<T, E>` everywhere).
