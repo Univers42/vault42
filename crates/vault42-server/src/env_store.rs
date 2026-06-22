@@ -109,4 +109,29 @@ impl Store {
         })
         .await
     }
+
+    /// List `(path, latest_version)` for every env secret of `(scope_id, epoch)`,
+    /// path-sorted. NOT owner-scoped — the seal to the scope public key gates decryption;
+    /// enumerating paths is open to any caller (the basis for an admin's rotate re-seal).
+    pub async fn list_env_secrets(
+        &self,
+        scope_id: &str,
+        epoch: i64,
+    ) -> Result<Vec<(String, i64)>, StoreError> {
+        let scope_id = scope_id.to_string();
+        self.run(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT path, MAX(version) FROM env_secrets \
+                     WHERE scope_id=?1 AND epoch=?2 GROUP BY path ORDER BY path",
+                )
+                .map_err(|_| StoreError::Sql)?;
+            let rows = stmt
+                .query_map(params![scope_id, epoch], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(|_| StoreError::Sql)?;
+            rows.collect::<Result<Vec<(String, i64)>, _>>()
+                .map_err(|_| StoreError::Sql)
+        })
+        .await
+    }
 }

@@ -28,7 +28,8 @@ use base64::Engine;
 use tonic::Status;
 use vault42_core::{verify_envelope_author, Envelope};
 use vault42_proto::vault::v1::{
-    GetEnvSecretRequest, GetEnvSecretResponse, PutEnvSecretRequest, PutEnvSecretResponse,
+    EnvSecretEntry, GetEnvSecretRequest, GetEnvSecretResponse, ListEnvSecretsRequest,
+    ListEnvSecretsResponse, PutEnvSecretRequest, PutEnvSecretResponse,
 };
 
 impl VaultSvc {
@@ -84,6 +85,24 @@ impl VaultSvc {
             author_pubkey: decode_b64(&row.author_pubkey_b64)?,
         })
     }
+
+    /// Enumerate the env-secret paths of `(scope_id, epoch)`, each at its latest version,
+    /// so an admin's rotate can re-seal every secret. Returns path + version only (no
+    /// envelope) to ANY authenticated caller — the seal still gates decryption.
+    pub(crate) async fn op_list_env_secrets(
+        &self,
+        _caller: &Principal,
+        req: ListEnvSecretsRequest,
+    ) -> Result<ListEnvSecretsResponse, Status> {
+        let entries = self
+            .store
+            .list_env_secrets(&req.scope_id, req.epoch as i64)
+            .await
+            .map_err(map_store)?;
+        Ok(ListEnvSecretsResponse {
+            entries: entries.into_iter().map(env_entry).collect(),
+        })
+    }
 }
 
 /// Build the storage put from the request + caller, base64-encoding the opaque envelope
@@ -109,6 +128,14 @@ fn decode_b64(text: &str) -> Result<Vec<u8>, Status> {
     STANDARD
         .decode(text)
         .map_err(|_| Status::internal("corrupt stored env secret"))
+}
+
+/// Map one stored `(path, version)` pair to a wire `EnvSecretEntry`.
+fn env_entry((path, version): (String, i64)) -> EnvSecretEntry {
+    EnvSecretEntry {
+        path,
+        version: version as u64,
+    }
 }
 
 #[cfg(test)]
@@ -298,5 +325,58 @@ mod tests {
             .await
             .expect_err("stale expected_prev must reject");
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    }
+
+    /// Seal one env secret to `path` at version `expected_prev + 1` and PUT it.
+    async fn put_path(svc: &VaultSvc, author: &Identity, path: &str, expected_prev: u64) {
+        let (keyset, _scope_secret) = generate_keyset([11u8; 16], 1);
+        let env = seal(
+            b"v",
+            env_meta("env-list"),
+            &scope_recipients(&keyset, None),
+            author.signing_key(),
+        )
+        .expect("seal");
+        let author_p = Principal::from_pubkey(author.author_public().to_bytes());
+        let req = PutEnvSecretRequest {
+            scope_id: hex::encode([11u8; 16]),
+            epoch: 1,
+            path: path.into(),
+            envelope: env.to_bytes().expect("env bytes"),
+            expected_prev_rev: expected_prev,
+        };
+        svc.op_put_env_secret(&author_p, req).await.expect("put");
+    }
+
+    #[tokio::test]
+    async fn list_env_secrets_returns_latest_version_per_path() {
+        let svc = fresh_svc("list");
+        let author = Identity::generate();
+        put_path(&svc, &author, "prod/.env", 0).await;
+        put_path(&svc, &author, "staging/.env", 0).await;
+        put_path(&svc, &author, "staging/.env", 1).await;
+        let caller = Principal::from_pubkey(author.author_public().to_bytes());
+        let resp = svc
+            .op_list_env_secrets(
+                &caller,
+                ListEnvSecretsRequest {
+                    scope_id: hex::encode([11u8; 16]),
+                    epoch: 1,
+                },
+            )
+            .await
+            .expect("list");
+        let entries: Vec<(String, u64)> = resp
+            .entries
+            .into_iter()
+            .map(|e| (e.path, e.version))
+            .collect();
+        assert_eq!(
+            entries,
+            vec![
+                ("prod/.env".to_string(), 1),
+                ("staging/.env".to_string(), 2)
+            ]
+        );
     }
 }

@@ -91,6 +91,14 @@ pub trait SecretStore: Send + Sync {
         path: &str,
         version: i64,
     ) -> Result<Option<EnvSecretRow>, StoreError>;
+
+    /// List `(path, latest_version)` for every env secret of `(scope_id, epoch)`. NOT
+    /// owner-scoped — enumerating paths is open to any caller (the seal gates decryption).
+    async fn list_env_secrets(
+        &self,
+        scope_id: &str,
+        epoch: i64,
+    ) -> Result<Vec<(String, i64)>, StoreError>;
 }
 
 /// The embedded SQLite store IS a `SecretStore`; each method forwards to the inherent
@@ -170,5 +178,13 @@ impl SecretStore for Store {
         version: i64,
     ) -> Result<Option<EnvSecretRow>, StoreError> {
         Store::get_env_secret(self, scope_id, epoch, path, version).await
+    }
+
+    async fn list_env_secrets(
+        &self,
+        scope_id: &str,
+        epoch: i64,
+    ) -> Result<Vec<(String, i64)>, StoreError> {
+        Store::list_env_secrets(self, scope_id, epoch).await
     }
 }

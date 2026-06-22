@@ -32,6 +32,11 @@ service Vault {
   // shared env secret.
   rpc PutEnvSecret(PutEnvSecretRequest) returns (PutEnvSecretResponse);
   rpc GetEnvSecret(GetEnvSecretRequest) returns (GetEnvSecretResponse);
+  // Enumerate an environment's secret paths (latest version each) so an admin's
+  // rotate-scope can re-seal every secret of a (scope_id, epoch). Returns only path +
+  // version (no envelope): any authenticated caller may list paths; the seal still gates
+  // decryption. Same flag gate as the other scope RPCs.
+  rpc ListEnvSecrets(ListEnvSecretsRequest) returns (ListEnvSecretsResponse);
 }
 
 // expected_prev_rev gives optimistic concurrency: the server writes only if the
@@ -199,3 +204,14 @@ message GetEnvSecretResponse {
   uint64 version = 2;
   bytes author_pubkey = 3;
 }
+
+// List every env-secret path of a (scope_id, epoch), each at its latest version.
+message ListEnvSecretsRequest {
+  string scope_id = 1;
+  uint32 epoch = 2;
+}
+message EnvSecretEntry {
+  string path = 1;
+  uint64 version = 2;
+}
+message ListEnvSecretsResponse { repeated EnvSecretEntry entries = 1; }

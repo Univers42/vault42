@@ -25,11 +25,12 @@ use tonic::{Request, Response, Status};
 use vault42_proto::vault::v1::vault_server::Vault;
 use vault42_proto::vault::v1::{
     unseal_response, AuditRequest, Chunk, GetEnvSecretRequest, GetEnvSecretResponse, GetRequest,
-    GetResponse, GetScopeKeyRequest, GetScopeKeyResponse, ListScopeMembersRequest,
-    ListScopeMembersResponse, LsRequest, LsResponse, PushRequest, PushResponse,
-    PutEnvSecretRequest, PutEnvSecretResponse, RmRequest, RmResponse, RotateKeysRequest,
-    RotateKeysResponse, RotateScopeRequest, RotateScopeResponse, ShareRequest, UnsealRequest,
-    UnsealResponse, WhoamiRequest, WhoamiResponse, WrapScopeKeyRequest, WrapScopeKeyResponse,
+    GetResponse, GetScopeKeyRequest, GetScopeKeyResponse, ListEnvSecretsRequest,
+    ListEnvSecretsResponse, ListScopeMembersRequest, ListScopeMembersResponse, LsRequest,
+    LsResponse, PushRequest, PushResponse, PutEnvSecretRequest, PutEnvSecretResponse, RmRequest,
+    RmResponse, RotateKeysRequest, RotateKeysResponse, RotateScopeRequest, RotateScopeResponse,
+    ShareRequest, UnsealRequest, UnsealResponse, WhoamiRequest, WhoamiResponse,
+    WrapScopeKeyRequest, WrapScopeKeyResponse,
 };
 
 type ChunkStream = Pin<Box<dyn Stream<Item = Result<Chunk, Status>> + Send>>;
@@ -274,6 +275,16 @@ impl Vault for VaultSvc {
     ) -> Result<Response<GetEnvSecretResponse>, Status> {
         let caller = self.authn_scope(request.metadata(), "/vault.v1.Vault/GetEnvSecret")?;
         self.op_get_env_secret(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn list_env_secrets(
+        &self,
+        request: Request<ListEnvSecretsRequest>,
+    ) -> Result<Response<ListEnvSecretsResponse>, Status> {
+        let caller = self.authn_scope(request.metadata(), "/vault.v1.Vault/ListEnvSecrets")?;
+        self.op_list_env_secrets(&caller, request.into_inner())
             .await
             .map(Response::new)
     }

@@ -340,6 +340,19 @@ impl SecretStore for GrobaseStore {
         let resp = self.exec(ENV_SECRET_OWNER, ENV_SECRETS_TABLE, body).await?;
         Ok(resp.rows.first().map(row_to_env_secret))
     }
+
+    async fn list_env_secrets(
+        &self,
+        scope_id: &str,
+        epoch: i64,
+    ) -> Result<Vec<(String, i64)>, StoreError> {
+        // ponytail: client-side group over a 500-row page — push to the aggregate op
+        // (MAX(version) GROUP BY path) if a scope/epoch exceeds 500 env-secret rows.
+        let filter = json!({ "scope_id": scope_id, "epoch": epoch });
+        let body = json!({"op": "list", "filter": filter, "limit": 500});
+        let resp = self.exec(ENV_SECRET_OWNER, ENV_SECRETS_TABLE, body).await?;
+        Ok(fold_env_latest(resp.rows))
+    }
 }
 
 /// Current Unix time in seconds — the row/audit timestamp + JWT `iat` source.
@@ -412,6 +425,17 @@ fn fold_latest(rows: Vec<Value>, prefix: &str) -> Vec<(String, i64, i64)> {
         entry.1 = entry.1.max(updated);
     }
     latest.into_iter().map(|(p, (v, u))| (p, v, u)).collect()
+}
+
+/// Reduce a page of env-secret rows to the latest `(path, version)` per path,
+/// path-sorted. `BTreeMap` keeps the path ordering.
+fn fold_env_latest(rows: Vec<Value>) -> Vec<(String, i64)> {
+    let mut latest: BTreeMap<String, i64> = BTreeMap::new();
+    for row in &rows {
+        let entry = latest.entry(field_str(row, "path")).or_insert(0);
+        *entry = (*entry).max(field_i64(row, "version"));
+    }
+    latest.into_iter().collect()
 }
 
 /// Read a row field as `i64`, accepting a JSON number or a numeric string (0 on miss).
