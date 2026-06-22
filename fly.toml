@@ -11,6 +11,10 @@ primary_region = "cdg"
 [build]
   dockerfile = "deploy/Dockerfile"
 
+# Store selection is automatic (see deploy/GROBASE-STORE.md): VAULT42_STORE is intentionally
+# UNSET, so vault42-server uses GrobaseStore once the 5 grobase vars are set as fly secrets
+# (GROBASE_QUERY_URL/ANON_KEY/APP_KEY/DB_ID + JWT_SECRET) and falls back to the SQLite /data
+# volume otherwise — no edit here is needed to switch backends.
 [env]
   VAULT42_HOST = "0.0.0.0"
   VAULT42_PORT = "8443"
