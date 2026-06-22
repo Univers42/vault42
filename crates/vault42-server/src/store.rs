@@ -46,7 +46,11 @@ CREATE TABLE IF NOT EXISTS audit (\
 CREATE TABLE IF NOT EXISTS scope_keys (\
   owner TEXT NOT NULL, scope_id TEXT NOT NULL, epoch INTEGER NOT NULL,\
   granted_blob TEXT NOT NULL, granter_pubkey TEXT NOT NULL, wrapped_at INTEGER NOT NULL,\
-  PRIMARY KEY (owner, scope_id, epoch));";
+  PRIMARY KEY (owner, scope_id, epoch));\
+CREATE TABLE IF NOT EXISTS env_secrets (\
+  scope_id TEXT NOT NULL, epoch INTEGER NOT NULL, path TEXT NOT NULL, version INTEGER NOT NULL,\
+  envelope TEXT NOT NULL, author_pubkey TEXT NOT NULL, updated_at INTEGER NOT NULL,\
+  PRIMARY KEY (scope_id, epoch, path, version));";
 
 /// A clonable handle to the SQLite connection pool. `max_secrets` caps the number of
 /// distinct paths one owner may create (0 = unlimited) — a guardrail against a

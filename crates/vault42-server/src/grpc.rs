@@ -24,11 +24,12 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 use vault42_proto::vault::v1::vault_server::Vault;
 use vault42_proto::vault::v1::{
-    unseal_response, AuditRequest, Chunk, GetRequest, GetResponse, GetScopeKeyRequest,
-    GetScopeKeyResponse, ListScopeMembersRequest, ListScopeMembersResponse, LsRequest, LsResponse,
-    PushRequest, PushResponse, RmRequest, RmResponse, RotateKeysRequest, RotateKeysResponse,
-    RotateScopeRequest, RotateScopeResponse, ShareRequest, UnsealRequest, UnsealResponse,
-    WhoamiRequest, WhoamiResponse, WrapScopeKeyRequest, WrapScopeKeyResponse,
+    unseal_response, AuditRequest, Chunk, GetEnvSecretRequest, GetEnvSecretResponse, GetRequest,
+    GetResponse, GetScopeKeyRequest, GetScopeKeyResponse, ListScopeMembersRequest,
+    ListScopeMembersResponse, LsRequest, LsResponse, PushRequest, PushResponse,
+    PutEnvSecretRequest, PutEnvSecretResponse, RmRequest, RmResponse, RotateKeysRequest,
+    RotateKeysResponse, RotateScopeRequest, RotateScopeResponse, ShareRequest, UnsealRequest,
+    UnsealResponse, WhoamiRequest, WhoamiResponse, WrapScopeKeyRequest, WrapScopeKeyResponse,
 };
 
 type ChunkStream = Pin<Box<dyn Stream<Item = Result<Chunk, Status>> + Send>>;
@@ -253,6 +254,26 @@ impl Vault for VaultSvc {
     ) -> Result<Response<RotateScopeResponse>, Status> {
         let caller = self.authn_scope(request.metadata(), "/vault.v1.Vault/RotateScope")?;
         self.op_rotate_scope(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn put_env_secret(
+        &self,
+        request: Request<PutEnvSecretRequest>,
+    ) -> Result<Response<PutEnvSecretResponse>, Status> {
+        let caller = self.authn_scope(request.metadata(), "/vault.v1.Vault/PutEnvSecret")?;
+        self.op_put_env_secret(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_env_secret(
+        &self,
+        request: Request<GetEnvSecretRequest>,
+    ) -> Result<Response<GetEnvSecretResponse>, Status> {
+        let caller = self.authn_scope(request.metadata(), "/vault.v1.Vault/GetEnvSecret")?;
+        self.op_get_env_secret(&caller, request.into_inner())
             .await
             .map(Response::new)
     }

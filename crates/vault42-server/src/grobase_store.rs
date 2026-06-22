@@ -19,6 +19,7 @@
 //! from a JSON string); the server still never sees plaintext (the blob is opaque).
 
 use crate::audit_store::{chain_hash, AuditRow, Event};
+use crate::env_store::{EnvSecretPut, EnvSecretRow};
 use crate::jwt;
 use crate::scope_store::{ScopeKeyPut, ScopeKeyRow};
 use crate::secret_read::SecretRow;
@@ -35,6 +36,13 @@ use zeroize::Zeroizing;
 const SECRETS_TABLE: &str = "vault42_secrets";
 const AUDIT_TABLE: &str = "vault42_audit";
 const SCOPE_KEYS_TABLE: &str = "vault42_scope_keys";
+const ENV_SECRETS_TABLE: &str = "vault42_env_secrets";
+
+/// The shared owner_id env-secret rows persist under. Env secrets are not owner-scoped —
+/// the seal to the scope public key is the access control — so EVERY caller's minted JWT
+/// must resolve to one stable owner_id for the `read_scoped` mount to surface the same
+/// rows to all of them.
+const ENV_SECRET_OWNER: &str = "vault42:env-secrets";
 
 /// A grobase storage backend. Holds the Kong endpoint, the public + app API keys, the
 /// mount id, and the co-deployed JWT secret used to mint per-owner sessions.
@@ -118,6 +126,21 @@ impl GrobaseStore {
     async fn head_version(&self, owner: &str, path: &str) -> Result<i64, StoreError> {
         Ok(self
             .get_secret(owner, path, 0)
+            .await?
+            .map(|row| row.version)
+            .unwrap_or(0))
+    }
+
+    /// Read the env-secret head version for `(scope_id, epoch, path)` (0 when absent) —
+    /// the basis for the next version + the optimistic-concurrency check.
+    async fn env_head_version(
+        &self,
+        scope_id: &str,
+        epoch: i64,
+        path: &str,
+    ) -> Result<i64, StoreError> {
+        Ok(self
+            .get_env_secret(scope_id, epoch, path, 0)
             .await?
             .map(|row| row.version)
             .unwrap_or(0))
@@ -275,6 +298,48 @@ impl SecretStore for GrobaseStore {
             .map(|row| (owner.to_string(), field_i64(row, "wrapped_at")))
             .collect())
     }
+
+    async fn put_env_secret(&self, put: EnvSecretPut) -> Result<i64, StoreError> {
+        let current = self
+            .env_head_version(&put.scope_id, put.epoch, &put.path)
+            .await?;
+        if matches!(put.expected_prev, Some(expected) if expected != current) {
+            return Err(StoreError::Conflict);
+        }
+        let next = current + 1;
+        let data = json!({
+            "scope_id": put.scope_id,
+            "epoch": put.epoch,
+            "path": put.path,
+            "version": next,
+            "envelope": put.envelope_b64,
+            "author_pubkey": put.author_pubkey_b64,
+            "updated_at": now_unix(),
+        });
+        self.exec(
+            ENV_SECRET_OWNER,
+            ENV_SECRETS_TABLE,
+            json!({"op": "insert", "data": data}),
+        )
+        .await?;
+        Ok(next)
+    }
+
+    async fn get_env_secret(
+        &self,
+        scope_id: &str,
+        epoch: i64,
+        path: &str,
+        version: i64,
+    ) -> Result<Option<EnvSecretRow>, StoreError> {
+        let mut filter = json!({ "scope_id": scope_id, "epoch": epoch, "path": path });
+        if version != 0 {
+            filter["version"] = json!(version);
+        }
+        let body = json!({"op": "list", "filter": filter, "sort": {"version": "desc"}, "limit": 1});
+        let resp = self.exec(ENV_SECRET_OWNER, ENV_SECRETS_TABLE, body).await?;
+        Ok(resp.rows.first().map(row_to_env_secret))
+    }
 }
 
 /// Current Unix time in seconds — the row/audit timestamp + JWT `iat` source.
@@ -306,6 +371,16 @@ fn row_to_scope_key(row: &Value) -> ScopeKeyRow {
     ScopeKeyRow {
         granted_blob: field_str(row, "granted_blob"),
         granter_pubkey: field_str(row, "granter_pubkey"),
+    }
+}
+
+/// Project a `/query/v1` row into an `EnvSecretRow`. The envelope and author key are
+/// already base64 TEXT (stored opaquely), so no decode is needed here.
+fn row_to_env_secret(row: &Value) -> EnvSecretRow {
+    EnvSecretRow {
+        version: field_i64(row, "version"),
+        envelope_b64: field_str(row, "envelope"),
+        author_pubkey_b64: field_str(row, "author_pubkey"),
     }
 }
 

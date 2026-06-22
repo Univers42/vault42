@@ -26,9 +26,11 @@ mod authn;
 mod config;
 #[cfg(test)]
 mod e2e;
+mod env_store;
 mod grobase_store;
 mod grpc;
 mod jwt;
+mod ops_env;
 mod ops_read;
 mod ops_rotate;
 mod ops_scope;
