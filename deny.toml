@@ -46,6 +46,10 @@ allow = [
     # The workspace's own crates declare SPDX "AGPL-3.0-only" (not bare "AGPL-3.0").
     "AGPL-3.0-only",
     "CC0-1.0",
+    # 0BSD (quoted_printable, via lettre's MIME encoding) is the BSD Zero Clause License:
+    # OSI-approved, and strictly more permissive than MIT since it drops the attribution
+    # requirement. AGPL-compatible.
+    "0BSD",
 ]
 confidence-threshold = 0.9
 
