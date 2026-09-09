@@ -43,7 +43,7 @@ Swap the final `cargo` command for any other lifecycle step. CI does the same th
 **A single test** — reuse the same `docker run …` prefix and pass a crate plus a filter:
 
 ```sh
-cargo test -p vault42-server e2e::                                    # the 6-test gRPC battery
+cargo test -p vault42-server e2e::                                    # the gRPC battery (13 tests)
 cargo test -p vault42-conformance every_single_byte_flip_is_rejected  # one proptest case
 cargo test -p vault42-core aad::                                      # one module's inline tests
 ```
