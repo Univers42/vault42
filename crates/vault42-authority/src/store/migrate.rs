@@ -198,11 +198,39 @@ CREATE TABLE IF NOT EXISTS grant_wraps (
 );
 ";
 
+/// P4: configuration variables at three levels of scope.
+///
+/// `value` is OPAQUE to the authority. It is never parsed, never validated beyond a length
+/// bound, and never interpreted: for a secret it is a sealed blob the client produced against
+/// the environment's scope key, and the authority holds no key that could open it. That is the
+/// zero-knowledge boundary expressed as a storage rule.
+///
+/// `is_secret` is metadata for the client, telling it whether a value needs unsealing. The
+/// authority treats both kinds identically.
+///
+/// The primary key is `(scope_kind, scope_id, key)`, which is what makes precedence a query
+/// rather than bookkeeping: one row per key per scope, and resolution folds environment over
+/// project over organization.
+const M4: &str = "
+CREATE TABLE IF NOT EXISTS variables (
+  scope_kind TEXT    NOT NULL CHECK (scope_kind IN ('org','project','env')),
+  scope_id   TEXT    NOT NULL,
+  key        TEXT    NOT NULL,
+  value      TEXT    NOT NULL,
+  is_secret  INTEGER NOT NULL DEFAULT 0 CHECK (is_secret IN (0,1)),
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT    NOT NULL REFERENCES accounts(id),
+  PRIMARY KEY (scope_kind, scope_id, key)
+);
+CREATE INDEX IF NOT EXISTS variables_scope ON variables(scope_kind, scope_id);
+";
+
 /// The ordered migration ledger: `(version, name, sql)`.
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "accounts_sessions_tenants", M1),
     (2, "orgs_teams_invites", M2),
     (3, "projects_envs_groups_pubkeys_grants", M3),
+    (4, "variables", M4),
 ];
 
 /// Apply every migration not yet recorded, in version order.

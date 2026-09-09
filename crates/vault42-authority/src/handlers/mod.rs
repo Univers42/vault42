@@ -20,6 +20,7 @@ pub mod orgs;
 pub mod projects;
 pub mod pubkeys;
 pub mod teams;
+pub mod variables;
 
 use crate::app::App;
 use crate::auth::Principal;
