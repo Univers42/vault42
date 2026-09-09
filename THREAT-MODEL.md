@@ -120,6 +120,44 @@ on the new-epoch revision is covered there and not by a vault42 gate.
   per-tenant opt-in as secrets (R1/R11), and audited; a scope key never silently inherits recovery
   escrow.
 
+### Scope-key deposit (R21)
+
+- **R21 Any authenticated caller can overwrite any member's scope-key wrap** — `WrapScopeKey`
+  deposits a wrap into `req.member_id`'s namespace, and the server verifies only that the grant
+  carries a valid signature by `req.granter_pubkey`, a key **taken from the same request**
+  (`crates/vault42-server/src/ops_scope.rs`). An attacker generates a keypair, signs their own
+  grant wrapping a secret of their choosing to the victim's public key, and deposits it. The
+  store upserts on `(owner, scope_id, epoch)`, so this REPLACES the victim's legitimate wrap
+  rather than sitting beside it. `RotateScope` reaches the same store the same way.
+  **Status:** live and measured, by
+  `an_attacker_signing_their_own_grant_still_overwrites_a_victims_wrap`, which passes today. That
+  test failing is the good news, and the instruction on it is to delete it and update this entry.
+
+  **What the caller-is-granter rule closes, and what it does not.** The deposit paths now require
+  the caller to be the granter whose signature the wrap carries, so a captured grant cannot be
+  replayed into a different member's namespace. It does nothing about the case above, because an
+  attacker signing their own grant satisfies it trivially. The rule is kept because it is free —
+  every legitimate path already satisfies it — and it is documented this loudly because
+  `require_caller_is_granter` reads like the deposit path is authorized, and it is not.
+
+- **R21a The consequence is bounded by a client check, conditionally** — `42ctl` compares the
+  recovered scope secret's public half against the key the environment publishes and refuses by
+  name when they differ (`42ctl/src/cmd/scope_recover.rs`). That turns substitution into a
+  denial of service in the normal case. It is skipped when the environment advertises no key
+  yet, which is exactly the enrolment window, and a substituted wrap accepted there gives the
+  victim a scope secret the attacker chose — so everything the victim then seals is readable by
+  the attacker. **Status:** the client check is real; the enrolment window is not covered.
+
+  The denial of service is unconditional either way: a member whose wrap has been replaced is
+  locked out until an admin re-syncs, and nothing prevents an attacker repeating it.
+
+- **R21b Why this cannot be fixed in the server as it stands** — closing it needs the server to
+  know WHICH granter keys are authorized for a scope, and it deliberately knows nothing about a
+  scope beyond an opaque id. That authorization lives in the authority's RBAC, so the fix is a
+  design change spanning both services, not a check. It is recorded rather than attempted while
+  the operator is away, because changing an authorization rule on a live vault on a guess is
+  worse than a documented gap.
+
 ### Tenant claims (R20)
 
 - **R20 Nothing ever releases a tenant name** — `/v1/register` calls `claim_tenant`, which inserts

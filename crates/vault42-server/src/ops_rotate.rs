@@ -45,6 +45,7 @@ impl VaultSvc {
             rewraps,
         } = req;
         require_caller_rewrap(caller, &rewraps)?;
+        require_caller_granted_every_rewrap(caller, &rewraps)?;
         let mut rewrapped = 0u32;
         for rewrap in rewraps {
             self.store_one_rewrap(rewrap, Some(new_epoch)).await?;
@@ -54,6 +55,32 @@ impl VaultSvc {
             .await;
         Ok(RotateScopeResponse { rewrapped })
     }
+}
+
+/// Refuse a rotation carrying any rewrap the caller did not sign.
+///
+/// `op_wrap_scope_key` requires the caller to be the granter, and a rotation reaches the same
+/// store through a different door: it calls `store_one_rewrap` directly, once per member. Without
+/// the same rule here, the check on the single-deposit path is a lock on one of two doors — an
+/// attacker sends a one-member rotation instead and overwrites the same row.
+///
+/// Both doors are still open to an attacker who signs their own grant; this only keeps the two
+/// paths consistent so a future fix has one rule to change rather than two. See THREAT-MODEL R21.
+///
+/// Checked before the first rewrap is persisted, alongside the caller's-own-wrap rule, so a
+/// refused rotation stores nothing.
+fn require_caller_granted_every_rewrap(
+    caller: &Principal,
+    rewraps: &[WrapScopeKeyRequest],
+) -> Result<(), Status> {
+    for rewrap in rewraps {
+        if caller.pubkey.as_slice() != rewrap.granter_pubkey.as_slice() {
+            return Err(Status::permission_denied(
+                "a rotation may only carry rewraps the rotating caller signed",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Refuse a rotation that does not re-wrap the new scope key to the rotating caller.

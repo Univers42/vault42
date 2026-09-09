@@ -35,12 +35,17 @@ impl VaultSvc {
     /// Deposit a granter-signed scope-key wrap into `req.member_id`'s namespace. Verifies
     /// the granter signature without decrypting, binds the blob's scope/epoch to the
     /// request, then stores the opaque blob base64-encoded. A forged/unsigned grant or a
-    /// scope/epoch mismatch is `permission_denied`; the caller need not own `member_id`.
+    /// scope/epoch mismatch is `permission_denied`.
+    ///
+    /// The caller still need not own `member_id` — depositing a wrap INTO someone else's
+    /// namespace is the whole point, since that is how an admin enrols a member. What the
+    /// caller must be is the granter.
     pub(crate) async fn op_wrap_scope_key(
         &self,
         caller: &Principal,
         req: WrapScopeKeyRequest,
     ) -> Result<WrapScopeKeyResponse, Status> {
+        require_caller_is_granter(caller, &req.granter_pubkey)?;
         let target = scope_target(&req);
         self.store_one_rewrap(req, None).await?;
         self.emit_audit(caller, "wrap_scope_key", &target).await;
@@ -129,6 +134,34 @@ fn granter_key(bytes: &[u8]) -> Result<AuthorPublicKey, Status> {
     AuthorPublicKey::from_bytes(&arr).map_err(|_| Status::invalid_argument("granter pubkey"))
 }
 
+/// Require the caller to be the granter whose signature this wrap carries.
+///
+/// WHAT THIS DOES NOT DO, stated first because the name invites the opposite reading: it does
+/// NOT make the deposit path authorized. An attacker who signs their OWN grant satisfies this
+/// rule trivially — caller and granter are then the same principal — and still overwrites any
+/// member's wrap for any scope and epoch, because the store upserts on
+/// `(owner, scope_id, epoch)`. That is measured, not assumed, by
+/// `an_attacker_signing_their_own_grant_still_overwrites_a_victims_wrap`. See THREAT-MODEL R21.
+///
+/// What it does close is narrower: a caller may no longer deposit a grant signed by a key it
+/// does not hold, so a captured grant cannot be replayed into a different member's namespace.
+///
+/// Closing the rest needs the server to know WHICH granter keys are authorized for a scope, and
+/// it deliberately knows nothing about a scope beyond an opaque id — that authorization lives in
+/// the authority's RBAC. Wiring it here is a design change, not a check.
+///
+/// Every legitimate path already satisfies this rule. `vault env-init` self-wraps, `sync-keys`
+/// wraps as the admin who signs, and a rotation re-wraps as the rotator, so it costs no
+/// privilege anyone exercises.
+fn require_caller_is_granter(caller: &Principal, granter_pubkey: &[u8]) -> Result<(), Status> {
+    if caller.pubkey.as_slice() != granter_pubkey {
+        return Err(Status::permission_denied(
+            "a scope-key wrap may only be deposited by the granter who signed it",
+        ));
+    }
+    Ok(())
+}
+
 /// Pin the request's claimed `(scope_id, epoch)` to what the blob's signature binds, so a
 /// caller cannot file a genuinely-signed grant under a different scope/epoch row.
 fn bind_request_to_grant(grant: &GrantedScopeKey, req: &WrapScopeKeyRequest) -> Result<(), Status> {
@@ -210,6 +243,63 @@ mod tests {
             granted_blob: blob,
             granter_pubkey: granter.author_public().to_bytes().to_vec(),
         }
+    }
+
+    /// Characterises an OPEN gap (THREAT-MODEL R21): this test passing means the vault is
+    /// vulnerable, and this test failing means somebody fixed it.
+    ///
+    /// WHEN THIS FAILS, DO NOT REPAIR IT. Delete it and update R21, because its failure is the
+    /// good news. It is written this way because `require_caller_is_granter` reads like the
+    /// deposit path is authorized, and the only durable correction to that impression is a test
+    /// that demonstrates otherwise sitting beside it.
+    ///
+    /// The attacker replays nobody's grant. They generate a keypair, sign their OWN grant
+    /// wrapping a secret of their choosing to the victim's public key, and deposit it as
+    /// themselves — so caller and granter are the same principal and the rule is satisfied.
+    #[tokio::test]
+    async fn an_attacker_signing_their_own_grant_still_overwrites_a_victims_wrap() {
+        let svc = fresh_svc("self-signed-attack");
+        let (admin, victim, attacker) = (
+            Identity::generate(),
+            Identity::generate(),
+            Identity::generate(),
+        );
+        let victim_p = Principal::from_pubkey(victim.author_public().to_bytes());
+        let scope = [9u8; 16];
+
+        let honest = signed_grant(&admin, &victim, scope, 1);
+        let admin_p = Principal::from_pubkey(admin.author_public().to_bytes());
+        svc.op_wrap_scope_key(&admin_p, wrap_req(&victim_p, &admin, scope, honest.clone()))
+            .await
+            .expect("the admin enrols the victim");
+
+        let hostile = signed_grant(&attacker, &victim, scope, 1);
+        let attacker_p = Principal::from_pubkey(attacker.author_public().to_bytes());
+        let outcome = svc
+            .op_wrap_scope_key(
+                &attacker_p,
+                wrap_req(&victim_p, &attacker, scope, hostile.clone()),
+            )
+            .await;
+
+        let stored = svc
+            .op_get_scope_key(&victim_p, &hex::encode(scope), 1)
+            .await
+            .expect("the victim still has a row");
+        assert_ne!(
+            honest, hostile,
+            "positive control: the two grants must differ, or the comparison below is empty"
+        );
+        assert!(
+            outcome.is_ok(),
+            "R21 may have been fixed: the hostile deposit was refused. Delete this test and \
+             update THREAT-MODEL rather than making it pass again."
+        );
+        assert_eq!(
+            stored.granted_blob, hostile,
+            "R21 may have been fixed: the victim's wrap survived. Delete this test and update \
+             THREAT-MODEL rather than making it pass again."
+        );
     }
 
     #[tokio::test]
