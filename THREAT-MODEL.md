@@ -120,6 +120,60 @@ on the new-epoch revision is covered there and not by a vault42 gate.
   per-tenant opt-in as secrets (R1/R11), and audited; a scope key never silently inherits recovery
   escrow.
 
+### Environment secrets (R22)
+
+- **R22 Writing an environment secret was authorized by nothing — FIXED** —
+  `op_put_env_secret` verified exactly one thing: that the envelope was authored by whoever sent
+  it, which an attacker satisfies by authoring their own. No membership, no grant, no role. So any
+  account that could reach the port could overwrite any `(scope_id, epoch, path)`, and scope ids
+  are `blake3(project ‖ env)`, so an attacker need not ever have seen one.
+  **Status:** closed. A write now requires the caller to hold a wrap for the scope.
+
+  **The contrast is what made it stark.** Reading was already protected, and cryptographically
+  rather than by the server's goodwill: a member with no wrap cannot open the envelope, whatever
+  the server serves them. So an organisation member with read-only access, or a total stranger,
+  could destroy what they could not read.
+
+  **Why it was destruction and not substitution.** The next reader gets an envelope sealed to the
+  scope key by an author they do not expect, so `get-env` fails rather than returning
+  attacker-chosen plaintext. That is the one mercy in it, and it is not a defence: an environment
+  whose secrets any stranger can erase is not a vault.
+
+  Held by `a_stranger_cannot_overwrite_an_env_secret`, watched failing with the rule removed.
+
+- **R22a Read and write are still not separated** — the residual, and it is the half a role model
+  needs. A member granted read-only access holds a wrap exactly as a writer does, because reading
+  requires one, so the membership rule refuses strangers and non-members and cannot refuse a member
+  who oversteps. Separating them needs `GrantedScopeKey` to carry a granter-signed role, which it
+  does not: its fields are the scope id, epoch, member id, wrapped DEK and the granter's signature
+  (`crates/vault42-core/src/keyset.rs`). That is a protocol change across the core crate, the
+  client and this server. **Status:** live. A read-only member can overwrite an environment secret.
+
+- **R22b How it stayed open** — the doc comment on the write path carried the sentence "the row is
+  NOT owner-scoped — the seal to the scope public key is the access control". That is TRUE of
+  reading and was never true of writing: sealing to a public key is something anyone holding a
+  public key can do, and the scope public key is published. A confidentiality argument sat on an
+  integrity path and read as though it covered both. The read path's own version of that sentence
+  is correct and is three lines below.
+
+  This is the same defect class as the overstated comments corrected in `THREAT-MODEL` earlier and
+  in `aead.rs`: prose asserting a property the code does not have, believed because it is specific.
+
+- **R22c Reading and listing are members-only now too** — tightened in the same change. The seal
+  always protected the plaintext, so this is genuine defence in depth rather than the load-bearing
+  check it is on the write path. But serving them to any authenticated caller handed a stranger the
+  existence of a path, its version count, its author's public key and its ciphertext length. None
+  of that is plaintext and all of it is somebody's business.
+  `a_stranger_can_neither_list_nor_fetch_env_secrets` holds it.
+
+  Membership is checked BEFORE the envelope is parsed, so a malformed envelope from a stranger
+  answers `permission_denied` rather than `invalid_argument` and an outsider does not learn that
+  their envelope parsed. That ordering created a trap of its own: the pre-existing
+  `unsigned_env_secret_is_rejected` would have passed on the membership refusal alone, testing
+  nothing about signatures. It enrols its author now, and
+  `a_stranger_is_refused_before_the_envelope_is_examined` pins the ordering so a reorder cannot
+  make it vacuous again in silence.
+
 ### Scope-key deposit (R21)
 
 - **R21 Any authenticated caller could overwrite any member's scope-key wrap — FIXED** —

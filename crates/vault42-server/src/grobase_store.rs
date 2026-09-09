@@ -294,7 +294,7 @@ impl SecretStore for GrobaseStore {
     async fn scope_standing(
         &self,
         _scope_id: &str,
-        _granter_id: &str,
+        _subject_id: &str,
     ) -> Result<ScopeStanding, StoreError> {
         Err(StoreError::Unsupported)
     }

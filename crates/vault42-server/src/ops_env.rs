@@ -33,17 +33,28 @@ use vault42_proto::vault::v1::{
 };
 
 impl VaultSvc {
-    /// Store a caller-authored env secret for `(scope_id, epoch, path)`. Verifies the
-    /// envelope's author signature against the caller's key WITHOUT decrypting (a forged
-    /// or unsigned envelope is `permission_denied`), enforces `expected_prev_rev` against
-    /// the stored head (a stale writer is `failed_precondition`), then appends the next
-    /// version and audits. The row is NOT owner-scoped — the seal to the scope public key
-    /// is the access control.
+    /// Store a caller-authored env secret for `(scope_id, epoch, path)`.
+    ///
+    /// Requires the caller to hold a wrap for the scope, verifies the envelope's author
+    /// signature against the caller's key WITHOUT decrypting, enforces `expected_prev_rev`
+    /// against the stored head, then appends the next version and audits.
+    ///
+    /// THE MEMBERSHIP CHECK IS NOT DEFENCE IN DEPTH, it is the only access control this path
+    /// has ever had. Until it existed, the write verified one thing — that the envelope was
+    /// authored by whoever sent it — which any attacker satisfies by authoring their own. So any
+    /// account that could reach the port could overwrite any `(scope_id, epoch, path)`, and
+    /// scope ids are `blake3(project ‖ env)`, so an attacker need not even have seen one.
+    ///
+    /// It stayed open because the sentence "the seal to the scope public key is the access
+    /// control" sat in this doc comment. That is true of READING and was never true of writing:
+    /// sealing to a public key is something anyone holding a public key can do. A confidentiality
+    /// argument was carried onto an integrity path. See THREAT-MODEL R22.
     pub(crate) async fn op_put_env_secret(
         &self,
         caller: &Principal,
         req: PutEnvSecretRequest,
     ) -> Result<PutEnvSecretResponse, Status> {
+        self.require_scope_member(caller, &req.scope_id).await?;
         let env = Envelope::from_bytes(&req.envelope)
             .map_err(|_| Status::invalid_argument("malformed envelope"))?;
         verify_envelope_author(&env, &caller.pubkey)
@@ -60,14 +71,20 @@ impl VaultSvc {
         })
     }
 
-    /// Fetch one env-secret version (0 = latest) for `(scope_id, epoch, path)`, returning
-    /// the opaque envelope + author key as raw bytes to ANY authenticated caller. The seal
-    /// protects the plaintext; the server never decrypts. `not_found` when absent.
+    /// Fetch one env-secret version (0 = latest) for `(scope_id, epoch, path)`, returning the
+    /// opaque envelope + author key as raw bytes. `not_found` when absent.
+    ///
+    /// Members only. The seal still protects the plaintext and always did, so this is genuinely
+    /// defence in depth here rather than the load-bearing check it is on the write path — but
+    /// serving it to any authenticated caller handed a stranger the existence of a path, its
+    /// version count, its author's key and its ciphertext length. None of that is plaintext and
+    /// all of it is somebody's business.
     pub(crate) async fn op_get_env_secret(
         &self,
-        _caller: &Principal,
+        caller: &Principal,
         req: GetEnvSecretRequest,
     ) -> Result<GetEnvSecretResponse, Status> {
+        self.require_scope_member(caller, &req.scope_id).await?;
         let row = self
             .store
             .get_env_secret(
@@ -91,9 +108,10 @@ impl VaultSvc {
     /// envelope) to ANY authenticated caller — the seal still gates decryption.
     pub(crate) async fn op_list_env_secrets(
         &self,
-        _caller: &Principal,
+        caller: &Principal,
         req: ListEnvSecretsRequest,
     ) -> Result<ListEnvSecretsResponse, Status> {
+        self.require_scope_member(caller, &req.scope_id).await?;
         let entries = self
             .store
             .list_env_secrets(&req.scope_id, req.epoch as i64)
@@ -102,6 +120,32 @@ impl VaultSvc {
         Ok(ListEnvSecretsResponse {
             entries: entries.into_iter().map(env_entry).collect(),
         })
+    }
+
+    /// Require the caller to hold a wrap for `scope_id`.
+    ///
+    /// Holding a wrap is the only membership the server can see, and it is the right one: the
+    /// scope secret reaches a member only through their wrap, and every legitimate env-secret
+    /// operation needs that secret or the public key it leads to.
+    ///
+    /// WHAT THIS DOES NOT SEPARATE is read from write. A member granted read-only access holds a
+    /// wrap exactly like a writer does, because reading requires it, so this refuses strangers
+    /// and non-members and cannot refuse a member who oversteps. Distinguishing them needs the
+    /// grant blob to carry a granter-signed role, which `GrantedScopeKey` does not — that is a
+    /// protocol change across the core crate, the client and this server, recorded as R22a rather
+    /// than guessed at here.
+    async fn require_scope_member(&self, caller: &Principal, scope_id: &str) -> Result<(), Status> {
+        let standing = self
+            .store
+            .scope_standing(scope_id, &caller.id)
+            .await
+            .map_err(map_store)?;
+        if standing.subject_is_member {
+            return Ok(());
+        }
+        Err(Status::permission_denied(
+            "only a member of this scope may read or write its env secrets",
+        ))
     }
 }
 
@@ -159,6 +203,47 @@ mod tests {
         VaultSvc::new(Arc::new(store), 120, None, None)
     }
 
+    /// Enrol `member` into `scope` the way the real flow does, so the caller is authorized.
+    ///
+    /// `creator` self-wraps when it is enrolling itself, which is `vault env-init`; otherwise it
+    /// grants onward, which is `vault sync-keys`. These tests predate any authorization on the
+    /// env-secret paths, so they wrote as an identity nobody had wrapped — a state the crypto
+    /// permits, since sealing needs only the scope PUBLIC key, and one no authorized flow
+    /// produces. Adding the check is what makes the enrolment step necessary, not a defect in
+    /// the tests.
+    async fn enrol(
+        svc: &VaultSvc,
+        creator: &Identity,
+        member: &Identity,
+        secret: &zeroize::Zeroizing<[u8; 32]>,
+        scope: [u8; 16],
+    ) {
+        let creator_p = Principal::from_pubkey(creator.author_public().to_bytes());
+        let member_p = Principal::from_pubkey(member.author_public().to_bytes());
+        let blob = grant_scope_key(
+            secret,
+            &member.encryption_public(),
+            creator.signing_key(),
+            scope,
+            1,
+        )
+        .expect("grant")
+        .to_bytes()
+        .expect("to_bytes");
+        svc.op_wrap_scope_key(
+            &creator_p,
+            vault42_proto::vault::v1::WrapScopeKeyRequest {
+                member_id: member_p.id,
+                scope_id: hex::encode(scope),
+                epoch: 1,
+                granted_blob: blob,
+                granter_pubkey: creator.author_public().to_bytes().to_vec(),
+            },
+        )
+        .await
+        .expect("enrol the member into the scope");
+    }
+
     /// Env-secret metadata with the `secret_id` a reader's `ReadScope` pins.
     fn env_meta(secret_id: &str) -> Metadata {
         Metadata {
@@ -201,6 +286,8 @@ mod tests {
         )
         .expect("seal");
         let author_p = Principal::from_pubkey(author.author_public().to_bytes());
+        enrol(&svc, &author, &author, &scope_secret, [7u8; 16]).await;
+        enrol(&svc, &author, &reader, &scope_secret, [7u8; 16]).await;
         let req = PutEnvSecretRequest {
             scope_id: hex::encode([7u8; 16]),
             epoch: 1,
@@ -275,11 +362,172 @@ mod tests {
         assert_eq!(err.code(), tonic::Code::PermissionDenied);
     }
 
+    /// A stranger with no relationship to the scope cannot overwrite its env secrets.
+    ///
+    /// This was open: the write verified only that the envelope was authored by whoever sent it,
+    /// which an attacker satisfies by authoring their own. Scope ids are `blake3(project ‖ env)`,
+    /// so the attacker need not have seen one. THREAT-MODEL R22.
+    #[tokio::test]
+    async fn a_stranger_cannot_overwrite_an_env_secret() {
+        let svc = fresh_svc("stranger-write");
+        let (admin, stranger) = (Identity::generate(), Identity::generate());
+        let scope = [21u8; 16];
+        let (keyset, secret) = generate_keyset(scope, 1);
+        enrol(&svc, &admin, &admin, &secret, scope).await;
+
+        let admin_p = Principal::from_pubkey(admin.author_public().to_bytes());
+        let honest = seal(
+            b"DATABASE_URL=postgres://prod",
+            env_meta("env-1"),
+            &scope_recipients(&keyset, None),
+            admin.signing_key(),
+        )
+        .expect("seal");
+        svc.op_put_env_secret(
+            &admin_p,
+            PutEnvSecretRequest {
+                scope_id: hex::encode(scope),
+                epoch: 1,
+                path: "prod/.env".into(),
+                envelope: honest.to_bytes().expect("bytes"),
+                expected_prev_rev: 0,
+            },
+        )
+        .await
+        .expect("positive control: a member of the scope may write it");
+
+        let stranger_p = Principal::from_pubkey(stranger.author_public().to_bytes());
+        let hostile = seal(
+            b"DATABASE_URL=postgres://attacker",
+            env_meta("env-1"),
+            &scope_recipients(&keyset, None),
+            stranger.signing_key(),
+        )
+        .expect("the stranger can seal: the scope public key is public");
+        let refusal = svc
+            .op_put_env_secret(
+                &stranger_p,
+                PutEnvSecretRequest {
+                    scope_id: hex::encode(scope),
+                    epoch: 1,
+                    path: "prod/.env".into(),
+                    envelope: hostile.to_bytes().expect("bytes"),
+                    expected_prev_rev: 1,
+                },
+            )
+            .await
+            .expect_err("a stranger must not overwrite an env secret");
+        assert_eq!(refusal.code(), tonic::Code::PermissionDenied);
+    }
+
+    /// A stranger cannot enumerate a scope's env-secret paths, nor fetch one.
+    ///
+    /// The seal always protected the plaintext, so this is defence in depth — but the path names,
+    /// the version count, the author's key and the ciphertext length were served to anybody.
+    #[tokio::test]
+    async fn a_stranger_can_neither_list_nor_fetch_env_secrets() {
+        let svc = fresh_svc("stranger-read");
+        let (admin, stranger) = (Identity::generate(), Identity::generate());
+        let scope = [22u8; 16];
+        let (keyset, secret) = generate_keyset(scope, 1);
+        enrol(&svc, &admin, &admin, &secret, scope).await;
+        let admin_p = Principal::from_pubkey(admin.author_public().to_bytes());
+        let env = seal(
+            b"v",
+            env_meta("env-1"),
+            &scope_recipients(&keyset, None),
+            admin.signing_key(),
+        )
+        .expect("seal");
+        svc.op_put_env_secret(
+            &admin_p,
+            PutEnvSecretRequest {
+                scope_id: hex::encode(scope),
+                epoch: 1,
+                path: "prod/.env".into(),
+                envelope: env.to_bytes().expect("bytes"),
+                expected_prev_rev: 0,
+            },
+        )
+        .await
+        .expect("the admin writes one");
+
+        let stranger_p = Principal::from_pubkey(stranger.author_public().to_bytes());
+        let listed = svc
+            .op_list_env_secrets(
+                &stranger_p,
+                ListEnvSecretsRequest {
+                    scope_id: hex::encode(scope),
+                    epoch: 1,
+                },
+            )
+            .await
+            .expect_err("a stranger must not enumerate the paths");
+        assert_eq!(listed.code(), tonic::Code::PermissionDenied);
+        let fetched = svc
+            .op_get_env_secret(
+                &stranger_p,
+                GetEnvSecretRequest {
+                    scope_id: hex::encode(scope),
+                    epoch: 1,
+                    path: "prod/.env".into(),
+                    version: 0,
+                },
+            )
+            .await
+            .expect_err("a stranger must not fetch it either");
+        assert_eq!(fetched.code(), tonic::Code::PermissionDenied);
+
+        svc.op_list_env_secrets(
+            &admin_p,
+            ListEnvSecretsRequest {
+                scope_id: hex::encode(scope),
+                epoch: 1,
+            },
+        )
+        .await
+        .expect("positive control: the member can still list");
+    }
+
+    /// Membership is checked BEFORE the envelope, and a stranger learns nothing from which.
+    ///
+    /// The ordering is deliberate and it creates a trap: `unsigned_env_secret_is_rejected` would
+    /// pass on the membership refusal alone, testing nothing about signatures, which is why that
+    /// test enrols its author. This pins the ordering so a future reorder cannot make it vacuous
+    /// again without failing here.
+    #[tokio::test]
+    async fn a_stranger_is_refused_before_the_envelope_is_examined() {
+        let svc = fresh_svc("order");
+        let stranger = Identity::generate();
+        let stranger_p = Principal::from_pubkey(stranger.author_public().to_bytes());
+        let refusal = svc
+            .op_put_env_secret(
+                &stranger_p,
+                PutEnvSecretRequest {
+                    scope_id: hex::encode([23u8; 16]),
+                    epoch: 1,
+                    path: "prod/.env".into(),
+                    envelope: b"not an envelope at all".to_vec(),
+                    expected_prev_rev: 0,
+                },
+            )
+            .await
+            .expect_err("refused");
+        assert_eq!(
+            refusal.code(),
+            tonic::Code::PermissionDenied,
+            "a malformed envelope from a stranger must answer PermissionDenied, not \
+             InvalidArgument — otherwise the error tells an outsider their envelope parsed"
+        );
+    }
+
     #[tokio::test]
     async fn unsigned_env_secret_is_rejected() {
         let svc = fresh_svc("unsigned");
         let author = Identity::generate();
+        let (_keyset, secret) = generate_keyset([9u8; 16], 1);
         let author_p = Principal::from_pubkey(author.author_public().to_bytes());
+        enrol(&svc, &author, &author, &secret, [9u8; 16]).await;
         let req = PutEnvSecretRequest {
             scope_id: hex::encode([9u8; 16]),
             epoch: 1,
@@ -297,9 +545,10 @@ mod tests {
     #[tokio::test]
     async fn stale_expected_prev_rev_is_rejected() {
         let svc = fresh_svc("stale");
-        let (keyset, _scope_secret) = generate_keyset([10u8; 16], 1);
+        let (keyset, scope_secret) = generate_keyset([10u8; 16], 1);
         let author = Identity::generate();
         let author_p = Principal::from_pubkey(author.author_public().to_bytes());
+        enrol(&svc, &author, &author, &scope_secret, [10u8; 16]).await;
         let scope_id = hex::encode([10u8; 16]);
         let put_req = |expected_prev: u64| {
             let env = seal(
@@ -352,6 +601,8 @@ mod tests {
     async fn list_env_secrets_returns_latest_version_per_path() {
         let svc = fresh_svc("list");
         let author = Identity::generate();
+        let (_keyset, secret) = generate_keyset([11u8; 16], 1);
+        enrol(&svc, &author, &author, &secret, [11u8; 16]).await;
         put_path(&svc, &author, "prod/.env", 0).await;
         put_path(&svc, &author, "staging/.env", 0).await;
         put_path(&svc, &author, "staging/.env", 1).await;

@@ -70,12 +70,12 @@ pub trait SecretStore: Send + Sync {
         epoch: i64,
     ) -> Result<Option<ScopeKeyRow>, StoreError>;
 
-    /// Whether the scope has any wrap, and whether `granter_id` holds one. The only basis the
+    /// Whether the scope has any wrap, and whether `subject_id` holds one. The only basis the
     /// server has for deciding who may grant a scope key, since it never learns what a scope is.
     async fn scope_standing(
         &self,
         scope_id: &str,
-        granter_id: &str,
+        subject_id: &str,
     ) -> Result<ScopeStanding, StoreError>;
 
     /// List `(member_id, wrapped_at)` the caller may see for `(scope_id, epoch)`.
@@ -168,9 +168,9 @@ impl SecretStore for Store {
     async fn scope_standing(
         &self,
         scope_id: &str,
-        granter_id: &str,
+        subject_id: &str,
     ) -> Result<ScopeStanding, StoreError> {
-        Store::scope_standing(self, scope_id, granter_id).await
+        Store::scope_standing(self, scope_id, subject_id).await
     }
 
     async fn list_scope_members(

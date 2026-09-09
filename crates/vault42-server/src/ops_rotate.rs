@@ -84,7 +84,7 @@ impl VaultSvc {
             .scope_standing(scope_id, &caller.id)
             .await
             .map_err(map_store)?;
-        if standing.granter_is_member {
+        if standing.subject_is_member {
             return Ok(());
         }
         Err(Status::permission_denied(

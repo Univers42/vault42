@@ -33,11 +33,14 @@ pub struct ScopeKeyPut {
 /// that decision: it never learns what a scope is beyond an opaque id.
 ///
 /// `claimed` distinguishes bootstrapping a new scope from depositing into an established one.
-/// `granter_is_member` is the capability itself — holding a wrap for a scope is what makes you
-/// able to pass it on, because opening one is the only way to have the secret to re-wrap.
+/// `subject_is_member` is the capability itself. Holding a wrap for a scope is what makes you able
+/// to pass it on, because opening one is the only way to have the secret to re-wrap — and it is
+/// equally what makes you able to write the scope's env secrets, because sealing one requires the
+/// scope public key that only a member's wrap leads to. The subject is the granter on the deposit
+/// paths and the caller on the env-secret paths; the question is the same either way.
 pub struct ScopeStanding {
     pub claimed: bool,
-    pub granter_is_member: bool,
+    pub subject_is_member: bool,
 }
 
 /// One member's wrap for a scope/epoch: the opaque grant blob and the granter key.
@@ -99,7 +102,7 @@ impl Store {
         .await
     }
 
-    /// Whether the scope has any wrap at all, and whether `granter_id` holds one of them.
+    /// Whether the scope has any wrap at all, and whether `subject_id` holds one of them.
     ///
     /// One statement rather than two queries, so a deposit cannot interleave between the reads
     /// and be judged against a scope that changed underneath it. Epoch is deliberately not a
@@ -108,21 +111,21 @@ impl Store {
     pub async fn scope_standing(
         &self,
         scope_id: &str,
-        granter_id: &str,
+        subject_id: &str,
     ) -> Result<ScopeStanding, StoreError> {
-        let (scope_id, granter_id) = (scope_id.to_string(), granter_id.to_string());
+        let (scope_id, subject_id) = (scope_id.to_string(), subject_id.to_string());
         self.run(move |c| {
             let (total, mine): (i64, i64) = c
                 .query_row(
                     "SELECT COUNT(*), COALESCE(SUM(owner = ?2), 0) FROM scope_keys \
                      WHERE scope_id = ?1",
-                    params![scope_id, granter_id],
+                    params![scope_id, subject_id],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .map_err(|_| StoreError::Sql)?;
             Ok(ScopeStanding {
                 claimed: total > 0,
-                granter_is_member: mine > 0,
+                subject_is_member: mine > 0,
             })
         })
         .await
