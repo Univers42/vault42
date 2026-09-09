@@ -24,8 +24,11 @@ on:
         type: string
         default: main
 
+# Shared with deploy, which drives the same two machines. This run stops them cold between
+# its push and its pull, so a deploy releasing at that moment would restart them underneath it
+# and the scenario would prove the wrong thing — or fail for a reason that is not a defect.
 concurrency:
-  group: fly-scenario
+  group: fly-apps
   cancel-in-progress: false
 
 permissions:

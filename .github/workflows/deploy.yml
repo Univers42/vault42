@@ -32,8 +32,12 @@ on:
 # Two deploys racing would interleave `secrets import` with `deploy` and could pin the server
 # to a key from a different run. Never cancel in flight: a half-finished deploy is worse than
 # a queued one.
+# Shared with the scenario workflow, which drives the same two machines and stops them
+# mid-run. Different groups would let a deploy's release race the scenario's stop, and the
+# loser leaves the apps in whichever state it finished in. Never cancel in flight: a
+# half-finished deploy is worse than a queued one.
 concurrency:
-  group: fly-deploy
+  group: fly-apps
   cancel-in-progress: false
 
 permissions:

@@ -26,8 +26,13 @@ on:
         options: [both, vault42-authority, vault42-server]
         default: both
 
-# Never let a stop and a start run at once: the loser would leave the machine in whichever
-# state it happened to finish in, which is the one thing a manual switch must not do.
+# Deliberately NOT in the `fly-apps` group that deploy and scenario share. This is the
+# operator's override, and its most urgent use is turning something off; queueing that behind a
+# twenty-minute deploy would make the switch useless exactly when it is needed. The cost is that
+# a stop pressed mid-deploy races the release, which is the operator's call to make.
+#
+# It still serialises against itself: a stop and a start running at once would leave the machine
+# in whichever state finished last, which is the one thing a manual switch must not do.
 concurrency:
   group: fly-machines
   cancel-in-progress: false
