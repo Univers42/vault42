@@ -19,14 +19,20 @@
 #
 # ISOLATED: runs the vault42-contract authority FROM CURRENT source (cargo, cached) on
 # a published loopback port, names suffixed $$, EXIT-trap cleanup. No external services.
+#
+# Strictly POSIX, and that is not cosmetic. This script carried `set -o pipefail` and an
+# unquoted variable holding docker arguments; both work under bash, which is what /bin/sh is
+# on the author's machine, and dash refuses the first outright. The gate therefore passed
+# locally for months and died on its first CI run with "Illegal option -o pipefail". Test a
+# change here under dash, not just under sh.
 
-set -uo pipefail
+set -u
+# shellcheck disable=SC1007  # CDPATH= clears CDPATH for this cd only, not a stray assignment
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 WS="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 IMG="${V12_IMG:-${RUST_TOOLCHAIN_IMG:-mini-baas-rust-toolchain:latest}}"
-VV="-v vault42-cargo-registry:/usr/local/cargo/registry -v vault42-cargo-git:/usr/local/cargo/git"
 ON="v12-on-$$"; OFF="v12-off-$$"; PORT_ON=19190; PORT_OFF=19191
-SECRET="v12-shared-gotrue-secret-$$"
+SECRET="v12-shared-proof-secret-$$"
 SEED="00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 # An RFC 8032 valid ed25519 public key (parse_fp requires a real key).
 PUB="d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
@@ -36,6 +42,7 @@ green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
 red() { printf '\033[0;31m%s\033[0m\n' "$*"; }
 ok() { green "  ✓ $*"; }
 fail() { red "[V12] FAIL — $*"; exit 1; }
+# shellcheck disable=SC2317  # reached through the EXIT trap, not by falling through
 cleanup() { docker rm -fv "$ON" "$OFF" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
@@ -67,14 +74,38 @@ reg() { curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$1/v1/r
 
 # Wait on the real HTTP /healthz (docker-proxy accepts TCP before the app binds, so a
 # bare TCP probe false-positives). $1=container $2=port
-wait_http() { for i in $(seq 1 240); do [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$2/healthz" 2>/dev/null)" = 200 ] && return 0; docker inspect "$1" >/dev/null 2>&1 || { docker logs "$1" 2>&1 | tail -15; return 1; }; sleep 1; done; docker logs "$1" 2>&1 | tail -15; return 1; }
+wait_http() {
+	_waited=0
+	while [ "$_waited" -lt 240 ]; do
+		[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$2/healthz" 2>/dev/null)" = 200 ] && return 0
+		docker inspect "$1" >/dev/null 2>&1 || break
+		_waited=$((_waited + 1))
+		sleep 1
+	done
+	docker logs "$1" 2>&1 | tail -15
+	return 1
+}
+
+# Start one contract authority from current source. $1=name $2=host port, then extra -e flags.
+# The volume flags are passed as separate words rather than held in one variable, so nothing
+# here depends on word splitting.
+start_authority() {
+	_name="$1"
+	_port="$2"
+	shift 2
+	docker run -d --name "$_name" -v "$WS":/work -w /work \
+		-v vault42-cargo-registry:/usr/local/cargo/registry \
+		-v vault42-cargo-git:/usr/local/cargo/git \
+		"$@" \
+		-e VAULT42_CONTRACT_SEED="$SEED" -e VAULT42_CONTRACT_PORT=8443 -e RUST_LOG=warn \
+		-p "127.0.0.1:$_port:8443" \
+		"$IMG" sh -c 'cargo run --quiet --bin vault42-contract' >/dev/null
+}
 
 echo "[V12] 1/4 start vault42-contract with REQUIRE_OTP (cargo, cached debug)…"
-docker run -d --name "$ON" -v "$WS":/work -w /work $VV \
-  -e VAULT42_CONTRACT_REQUIRE_OTP=true -e GOTRUE_JWT_SECRET="$SECRET" \
-  -e VAULT42_CONTRACT_SEED="$SEED" -e VAULT42_CONTRACT_DB=/tmp/c-on.db \
-  -e VAULT42_CONTRACT_PORT=8443 -e RUST_LOG=warn -p "127.0.0.1:$PORT_ON:8443" \
-  "$IMG" sh -c 'cargo run --quiet --bin vault42-contract' >/dev/null
+start_authority "$ON" "$PORT_ON" \
+  -e VAULT42_CONTRACT_REQUIRE_OTP=true -e VAULT42_OTP_PROOF_SECRET="$SECRET" \
+  -e VAULT42_CONTRACT_DB=/tmp/c-on.db
 wait_http "$ON" "$PORT_ON" || fail "REQUIRE_OTP authority never listened"
 ok "authority up (VAULT42_CONTRACT_REQUIRE_OTP=true)"
 
@@ -97,10 +128,7 @@ EXP="$(mint "$EMAIL" otp-proof -600)"
 ok "wrong-email · tampered-signature · expired → all 401"
 
 echo "[V12] 4/4 flag OFF → register works WITHOUT a proof (byte-parity)"
-docker run -d --name "$OFF" -v "$WS":/work -w /work $VV \
-  -e VAULT42_CONTRACT_SEED="$SEED" -e VAULT42_CONTRACT_DB=/tmp/c-off.db \
-  -e VAULT42_CONTRACT_PORT=8443 -e RUST_LOG=warn -p "127.0.0.1:$PORT_OFF:8443" \
-  "$IMG" sh -c 'cargo run --quiet --bin vault42-contract' >/dev/null
+start_authority "$OFF" "$PORT_OFF" -e VAULT42_CONTRACT_DB=/tmp/c-off.db
 wait_http "$OFF" "$PORT_OFF" || fail "flag-off authority never listened"
 C="$(reg "$PORT_OFF" t-off "{\"tenant\":\"v12off$$\",\"author_pubkey\":\"$PUB\"}")"
 [ "$C" = 200 ] || fail "flag-off register without proof expected 200, got $C"
