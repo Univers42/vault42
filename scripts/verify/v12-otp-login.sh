@@ -21,7 +21,7 @@
 # a published loopback port, names suffixed $$, EXIT-trap cleanup. No external services.
 
 set -uo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 WS="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 IMG="${V12_IMG:-mini-baas-rust-toolchain:latest}"
 VV="-v vault42-cargo-registry:/usr/local/cargo/registry -v vault42-cargo-git:/usr/local/cargo/git"
@@ -38,6 +38,15 @@ ok() { green "  ✓ $*"; }
 fail() { red "[V12] FAIL — $*"; exit 1; }
 cleanup() { docker rm -fv "$ON" "$OFF" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
+
+# Skip rather than fail on a missing prerequisite: without this the script went straight
+# to `docker run` with an absent image and reported "authority never listened", which
+# diagnosed the wrong problem. run-gate-battery.sh --strict turns these skips into
+# failures for CI.
+skip() { printf 'SKIP v12: %s\n' "$1"; exit 0; }
+command -v docker >/dev/null 2>&1 || skip "docker not installed"
+command -v python3 >/dev/null 2>&1 || skip "python3 not installed (needed to mint OTP proofs)"
+docker image inspect "$IMG" >/dev/null 2>&1 || skip "toolchain image $IMG absent (run a build first)"
 
 # Mint an HS256 OTP proof. $1=email $2=aud $3=exp-offset-secs $4(optional)=tamper
 mint() {
@@ -58,7 +67,7 @@ reg() { curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$1/v1/r
 
 # Wait on the real HTTP /healthz (docker-proxy accepts TCP before the app binds, so a
 # bare TCP probe false-positives). $1=container $2=port
-wait_http() { local i; for i in $(seq 1 240); do [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$2/healthz" 2>/dev/null)" = 200 ] && return 0; docker inspect "$1" >/dev/null 2>&1 || { docker logs "$1" 2>&1 | tail -15; return 1; }; sleep 1; done; docker logs "$1" 2>&1 | tail -15; return 1; }
+wait_http() { for i in $(seq 1 240); do [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$2/healthz" 2>/dev/null)" = 200 ] && return 0; docker inspect "$1" >/dev/null 2>&1 || { docker logs "$1" 2>&1 | tail -15; return 1; }; sleep 1; done; docker logs "$1" 2>&1 | tail -15; return 1; }
 
 echo "[V12] 1/4 start vault42-contract with REQUIRE_OTP (cargo, cached debug)…"
 docker run -d --name "$ON" -v "$WS":/work -w /work $VV \
