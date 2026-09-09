@@ -166,6 +166,31 @@ To make the apps reachable **only** after pressing start, set `auto_start_machin
 `fly.toml` and `fly.authority.toml`. One line each. Everything else keeps working, but 42ctl
 will fail against a stopped app instead of waking it.
 
+### Three Actions secrets are unused, and one is a live mail password
+
+The workflows reference `FLY_API_TOKEN`, `VAULT42_REGISTER_TOKEN` and `DOCK_PAT`. The repository
+also holds `MAIL_FROM`, `MAIL_PASSWORD` and `VAULT42_OTP_PROOF_SECRET`, and nothing reads them:
+the authority needs those three as **fly** secrets, which they are, and no CI job needs them at
+all.
+
+`MAIL_PASSWORD` is a working Titan credential. Sitting unused in the Actions store, it is
+reachable by any workflow anyone adds to this repository, on an account that also sends mail from
+the project's domain. Actions secrets are not exposed to pull requests from forks, so the exposure
+is to whoever can push a workflow — but that is a larger set than "nobody", and the credential
+buys nothing there.
+
+`VAULT42_OTP_PROOF_SECRET` is additionally out of step: the value on fly was regenerated when the
+authority was first deployed, so the Actions copy is a different secret that matches nothing.
+
+Removing all three is safe and is left to the operator, since deleting someone's stored
+credentials is not a change to make on their behalf:
+
+```sh
+gh secret delete MAIL_PASSWORD
+gh secret delete MAIL_FROM
+gh secret delete VAULT42_OTP_PROOF_SECRET
+```
+
 ### Mail delivery is configured and NOT proven
 
 The Titan credential authenticates — that was checked directly against `smtp.titan.email:465`
