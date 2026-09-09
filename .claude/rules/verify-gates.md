@@ -6,7 +6,7 @@ Every rule here was written by a gate that lied. They are in the order they were
 
 `--fast` is the per-PR subset, listed in `FAST_GATES`; register a new fast gate there explicitly.
 `--all` runs every `v*-*.sh`. `m71-grobase-substrate.sh` does not match that glob and only runs when
-named. Ten gates pass under `--all --strict` today: v01, v12, v16-v20, v25-v27.
+named. Eleven gates pass under `--all --strict` today: v01, v12, v16-v21, v25-v27.
 
 **Gates SKIP rather than fail when a prerequisite is missing**, so a fresh machine would report
 success having run nothing. Pass `--strict` to turn any SKIP into a failure; CI must use it. Gates

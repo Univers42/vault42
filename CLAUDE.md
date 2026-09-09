@@ -52,8 +52,8 @@ cargo test -p vault42-core aad::                                      # one modu
 
 ### The verify gates
 
-`scripts/verify/run-gate-battery.sh [--fast|--all|<gate>...] [--strict]`. Ten gates pass under
-`--all --strict` today: v01, v12, v16-v20, v25-v27. **The discipline that keeps them honest lives in
+`scripts/verify/run-gate-battery.sh [--fast|--all|<gate>...] [--strict]`. Eleven gates pass under
+`--all --strict` today: v01, v12, v16-v21, v25-v27. **The discipline that keeps them honest lives in
 `.claude/rules/verify-gates.md` and every rule in it was written by a gate that lied — read it before
 adding or trusting one.**
 
