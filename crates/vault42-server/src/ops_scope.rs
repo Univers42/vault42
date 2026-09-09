@@ -26,7 +26,7 @@ use crate::svc::VaultSvc;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use tonic::Status;
-use vault42_core::{verify_grant_signature, AuthorPublicKey, GrantedScopeKey};
+use vault42_core::{verify_grant_signature, AuthorPublicKey, GrantedScopeKey, ScopeRole};
 use vault42_proto::vault::v1::{
     GetScopeKeyResponse, ScopeMember, WrapScopeKeyRequest, WrapScopeKeyResponse,
 };
@@ -62,6 +62,15 @@ impl VaultSvc {
     /// learns what a scope IS beyond an opaque id, and the authority's RBAC is not reachable on
     /// a per-request path without giving up offline contract verification.
     ///
+    /// DEPOSITING REQUIRES WRITER, not merely membership, and that is what makes the role real.
+    /// A Reader holds the scope secret — reading requires it — so they can mint a grant to
+    /// themselves carrying Writer, validly signed by their own key. Under a membership-only rule
+    /// they satisfied caller-is-granter and granter-is-a-member, and the upsert replaced their own
+    /// Reader wrap with it. Four steps, no forgery, and every check passed. Enforcing Writer on
+    /// the env-secret path alone would have been bypassable exactly that way, which is why both
+    /// rules land together. `a_reader_cannot_promote_their_own_wrap_to_writer` measured it before
+    /// the fix and holds it after.
+    ///
     /// The one exception is bootstrapping. `vault env-init` creates a scope by self-wrapping,
     /// and at that instant nobody holds a wrap for it, so the rule above would refuse the only
     /// call that could ever satisfy it. A deposit into an UNCLAIMED scope is therefore allowed
@@ -82,12 +91,60 @@ impl VaultSvc {
             .scope_standing(&req.scope_id, &caller.id)
             .await
             .map_err(map_store)?;
-        if standing.subject_is_member || (!standing.claimed && req.member_id == caller.id) {
+        if !standing.claimed {
+            return self.allow_only_a_self_bootstrap(caller, req);
+        }
+        match self.current_role(caller, &req.scope_id).await? {
+            Some(ScopeRole::Writer) => Ok(()),
+            Some(ScopeRole::Reader) => Err(Status::permission_denied(
+                "a read-only member of this scope may not deposit a wrap for it",
+            )),
+            None => Err(Status::permission_denied(
+                "only a member of this scope may deposit a wrap for it",
+            )),
+        }
+    }
+
+    /// The bootstrap exception: an unclaimed scope may be opened only by granting to yourself.
+    fn allow_only_a_self_bootstrap(
+        &self,
+        caller: &Principal,
+        req: &WrapScopeKeyRequest,
+    ) -> Result<(), Status> {
+        if req.member_id == caller.id {
             return Ok(());
         }
         Err(Status::permission_denied(
-            "only a member of this scope may deposit a wrap for it",
+            "an unclaimed scope may only be opened by granting it to yourself",
         ))
+    }
+
+    /// The role `caller` currently holds for `scope_id`: the one in their NEWEST wrap.
+    ///
+    /// Newest rather than strongest across epochs, because a rotation re-wraps everybody with
+    /// their present role. Taking the strongest would let a wrap from before a demotion outvote
+    /// the one that recorded it, which is the demotion never taking effect at all rather than
+    /// taking effect on the next sync (THREAT-MODEL R22d).
+    ///
+    /// A blob that will not parse yields `None` rather than a role. It cannot be treated as
+    /// permissive: the whole point of the version prefix is that an unreadable grant is refused.
+    pub(crate) async fn current_role(
+        &self,
+        caller: &Principal,
+        scope_id: &str,
+    ) -> Result<Option<ScopeRole>, Status> {
+        let blobs = self
+            .store
+            .scope_wraps_of(&caller.id, scope_id)
+            .await
+            .map_err(map_store)?;
+        for blob in blobs {
+            let bytes = decode_b64(&blob)?;
+            if let Ok(grant) = GrantedScopeKey::from_bytes(&bytes) {
+                return Ok(Some(grant.role));
+            }
+        }
+        Ok(None)
     }
 
     /// Verify one rewrap (granter signature + the blob's bound `scope_id`/`epoch` matching
@@ -332,6 +389,92 @@ mod tests {
         assert_eq!(
             stored.granted_blob, honest,
             "the victim must still hold the admin's grant, not the attacker's"
+        );
+    }
+
+    /// Can a Reader promote themselves? Written to find out, before enforcing anything on it.
+    ///
+    /// A Reader holds a wrap, so they can open it and hold the scope secret. With the secret and
+    /// their own signing key they can mint a grant to THEMSELVES carrying Writer, validly signed.
+    /// R21's deposit rule is caller-is-granter plus granter-holds-a-wrap, and a Reader satisfies
+    /// both, so the upsert replaces their Reader wrap with the Writer one they just minted.
+    #[tokio::test]
+    async fn a_reader_cannot_promote_their_own_wrap_to_writer() {
+        let svc = fresh_svc("self-promote");
+        let (admin, reader) = (Identity::generate(), Identity::generate());
+        let scope = [31u8; 16];
+        let (_keyset, secret) = generate_keyset(scope, 1);
+        let admin_p = Principal::from_pubkey(admin.author_public().to_bytes());
+        let reader_p = Principal::from_pubkey(reader.author_public().to_bytes());
+
+        bootstrap_scope(&svc, &admin, scope).await;
+        let as_reader = grant_scope_key(
+            &secret,
+            &reader.encryption_public(),
+            admin.signing_key(),
+            GrantTerms {
+                scope_id: scope,
+                epoch: 1,
+                role: ScopeRole::Reader,
+            },
+        )
+        .expect("grant")
+        .to_bytes()
+        .expect("bytes");
+        svc.op_wrap_scope_key(
+            &admin_p,
+            WrapScopeKeyRequest {
+                member_id: reader_p.id.clone(),
+                scope_id: hex::encode(scope),
+                epoch: 1,
+                granted_blob: as_reader,
+                granter_pubkey: admin.author_public().to_bytes().to_vec(),
+            },
+        )
+        .await
+        .expect("the admin enrols a read-only member");
+
+        let self_promoted = grant_scope_key(
+            &secret,
+            &reader.encryption_public(),
+            reader.signing_key(),
+            GrantTerms {
+                scope_id: scope,
+                epoch: 1,
+                role: ScopeRole::Writer,
+            },
+        )
+        .expect("the reader can mint it: they hold the secret and their own key")
+        .to_bytes()
+        .expect("bytes");
+        let outcome = svc
+            .op_wrap_scope_key(
+                &reader_p,
+                WrapScopeKeyRequest {
+                    member_id: reader_p.id.clone(),
+                    scope_id: hex::encode(scope),
+                    epoch: 1,
+                    granted_blob: self_promoted,
+                    granter_pubkey: reader.author_public().to_bytes().to_vec(),
+                },
+            )
+            .await;
+        assert!(
+            outcome.is_err(),
+            "a Reader must not be able to deposit a Writer grant for themselves"
+        );
+
+        let stored = svc
+            .op_get_scope_key(&reader_p, &hex::encode(scope), 1)
+            .await
+            .expect("the reader still holds a wrap");
+        let role = GrantedScopeKey::from_bytes(&stored.granted_blob)
+            .expect("parse")
+            .role;
+        assert_eq!(
+            role,
+            ScopeRole::Reader,
+            "the reader's stored role must still be Reader"
         );
     }
 

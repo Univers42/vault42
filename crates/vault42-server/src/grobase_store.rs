@@ -291,6 +291,16 @@ impl SecretStore for GrobaseStore {
     /// answering `claimed: false` from an owner-scoped view would report an established scope as
     /// unclaimed and hand a bootstrap to anyone who asked. Refusing is the only sound answer, and
     /// this backend is off unless `VAULT42_STORE=grobase` names it exactly.
+    /// Refused for the same reason as `scope_standing`: an authorization answer this owner-scoped
+    /// seam cannot give soundly, and "I cannot tell" must never render as "permitted".
+    async fn scope_wraps_of(
+        &self,
+        _owner: &str,
+        _scope_id: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        Err(StoreError::Unsupported)
+    }
+
     async fn scope_standing(
         &self,
         _scope_id: &str,

@@ -26,7 +26,7 @@ use crate::svc::VaultSvc;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use tonic::Status;
-use vault42_core::{verify_envelope_author, Envelope};
+use vault42_core::{verify_envelope_author, Envelope, ScopeRole};
 use vault42_proto::vault::v1::{
     EnvSecretEntry, GetEnvSecretRequest, GetEnvSecretResponse, ListEnvSecretsRequest,
     ListEnvSecretsResponse, PutEnvSecretRequest, PutEnvSecretResponse,
@@ -54,7 +54,8 @@ impl VaultSvc {
         caller: &Principal,
         req: PutEnvSecretRequest,
     ) -> Result<PutEnvSecretResponse, Status> {
-        self.require_scope_member(caller, &req.scope_id).await?;
+        self.require_scope_writer(caller, &req.scope_id, req.epoch)
+            .await?;
         let env = Envelope::from_bytes(&req.envelope)
             .map_err(|_| Status::invalid_argument("malformed envelope"))?;
         verify_envelope_author(&env, &caller.pubkey)
@@ -120,6 +121,41 @@ impl VaultSvc {
         Ok(ListEnvSecretsResponse {
             entries: entries.into_iter().map(env_entry).collect(),
         })
+    }
+
+    /// Require the caller's wrap AT `epoch` to carry `Writer`.
+    ///
+    /// At the requested epoch specifically, not the newest they hold: each epoch has its own
+    /// keyset, so sealing to epoch E needs E's key, and a Writer wrap at E-1 says nothing about
+    /// what they may do at E. A rotation re-wraps everybody with their present role, so this is
+    /// where a demotion takes effect.
+    ///
+    /// Reading only the caller's own row means the answer cannot change between the writes of one
+    /// tree: a caller who may not write is refused at the first file rather than the fiftieth, so
+    /// a refusal never leaves new files behind an old manifest.
+    async fn require_scope_writer(
+        &self,
+        caller: &Principal,
+        scope_id: &str,
+        epoch: u32,
+    ) -> Result<(), Status> {
+        let row = self
+            .store
+            .get_scope_key(&caller.id, scope_id, epoch as i64)
+            .await
+            .map_err(map_store)?
+            .ok_or_else(|| {
+                Status::permission_denied("only a member of this scope may write its env secrets")
+            })?;
+        let bytes = decode_b64(&row.granted_blob)?;
+        let grant = vault42_core::GrantedScopeKey::from_bytes(&bytes)
+            .map_err(|_| Status::permission_denied("your wrap for this scope is unreadable"))?;
+        if matches!(grant.role, ScopeRole::Writer) {
+            return Ok(());
+        }
+        Err(Status::permission_denied(
+            "a read-only member of this scope may not write its env secrets",
+        ))
     }
 
     /// Require the caller to hold a wrap for `scope_id`.
@@ -218,6 +254,18 @@ mod tests {
         secret: &zeroize::Zeroizing<[u8; 32]>,
         scope: [u8; 16],
     ) {
+        enrol_with(svc, creator, member, secret, scope, ScopeRole::Writer).await
+    }
+
+    /// Enrol `member` with an explicit role, which is what `sync-keys` does per project role.
+    async fn enrol_with(
+        svc: &VaultSvc,
+        creator: &Identity,
+        member: &Identity,
+        secret: &zeroize::Zeroizing<[u8; 32]>,
+        scope: [u8; 16],
+        role: ScopeRole,
+    ) {
         let creator_p = Principal::from_pubkey(creator.author_public().to_bytes());
         let member_p = Principal::from_pubkey(member.author_public().to_bytes());
         let blob = grant_scope_key(
@@ -227,7 +275,7 @@ mod tests {
             GrantTerms {
                 scope_id: scope,
                 epoch: 1,
-                role: ScopeRole::Writer,
+                role,
             },
         )
         .expect("grant")
@@ -366,6 +414,62 @@ mod tests {
             .await
             .expect_err("forged author must reject");
         assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    }
+
+    /// A read-only member cannot write, and a Writer in the same scope can. R22a.
+    #[tokio::test]
+    async fn a_read_only_member_cannot_write_an_env_secret() {
+        let svc = fresh_svc("reader-write");
+        let (admin, reader) = (Identity::generate(), Identity::generate());
+        let scope = [41u8; 16];
+        let (keyset, secret) = generate_keyset(scope, 1);
+        enrol_with(&svc, &admin, &admin, &secret, scope, ScopeRole::Writer).await;
+        enrol_with(&svc, &admin, &reader, &secret, scope, ScopeRole::Reader).await;
+
+        let write_as = |who: &Identity| {
+            let env = seal(
+                b"DATABASE_URL=postgres://prod",
+                env_meta("env-1"),
+                &scope_recipients(&keyset, None),
+                who.signing_key(),
+            )
+            .expect("seal");
+            (
+                Principal::from_pubkey(who.author_public().to_bytes()),
+                PutEnvSecretRequest {
+                    scope_id: hex::encode(scope),
+                    epoch: 1,
+                    path: "prod/.env".into(),
+                    envelope: env.to_bytes().expect("bytes"),
+                    expected_prev_rev: 0,
+                },
+            )
+        };
+
+        let (admin_p, admin_req) = write_as(&admin);
+        svc.op_put_env_secret(&admin_p, admin_req)
+            .await
+            .expect("positive control: a Writer in this scope may write it");
+
+        let (reader_p, mut reader_req) = write_as(&reader);
+        reader_req.expected_prev_rev = 1;
+        let refusal = svc
+            .op_put_env_secret(&reader_p, reader_req)
+            .await
+            .expect_err("a read-only member must not write");
+        assert_eq!(refusal.code(), tonic::Code::PermissionDenied);
+
+        svc.op_get_env_secret(
+            &reader_p,
+            GetEnvSecretRequest {
+                scope_id: hex::encode(scope),
+                epoch: 1,
+                path: "prod/.env".into(),
+                version: 0,
+            },
+        )
+        .await
+        .expect("the same reader must still be able to READ, or this is not a role split");
     }
 
     /// A stranger with no relationship to the scope cannot overwrite its env secrets.

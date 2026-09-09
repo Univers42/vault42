@@ -78,6 +78,10 @@ pub trait SecretStore: Send + Sync {
         subject_id: &str,
     ) -> Result<ScopeStanding, StoreError>;
 
+    /// Every wrap `owner` holds for `scope_id`, newest epoch first, as stored blobs. Blobs, not
+    /// roles: the role is inside bytes the store must not learn to parse.
+    async fn scope_wraps_of(&self, owner: &str, scope_id: &str) -> Result<Vec<String>, StoreError>;
+
     /// List `(member_id, wrapped_at)` the caller may see for `(scope_id, epoch)`.
     async fn list_scope_members(
         &self,
@@ -171,6 +175,10 @@ impl SecretStore for Store {
         subject_id: &str,
     ) -> Result<ScopeStanding, StoreError> {
         Store::scope_standing(self, scope_id, subject_id).await
+    }
+
+    async fn scope_wraps_of(&self, owner: &str, scope_id: &str) -> Result<Vec<String>, StoreError> {
+        Store::scope_wraps_of(self, owner, scope_id).await
     }
 
     async fn list_scope_members(

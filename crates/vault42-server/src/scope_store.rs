@@ -131,6 +131,37 @@ impl Store {
         .await
     }
 
+    /// Every wrap `owner` holds for `scope_id`, NEWEST EPOCH FIRST, as the stored blobs.
+    ///
+    /// Blobs rather than roles: the role lives inside opaque bytes the store must not learn to
+    /// parse. Newest first because a member's CURRENT standing is their newest wrap — a rotation
+    /// re-wraps everybody with their present role, so an older epoch's wrap is a record of what
+    /// they used to be and must not outvote it.
+    pub async fn scope_wraps_of(
+        &self,
+        owner: &str,
+        scope_id: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        let (owner, scope_id) = (owner.to_string(), scope_id.to_string());
+        self.run(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT granted_blob FROM scope_keys \
+                     WHERE owner=?1 AND scope_id=?2 ORDER BY epoch DESC",
+                )
+                .map_err(|_| StoreError::Sql)?;
+            let rows = stmt
+                .query_map(params![owner, scope_id], |r| r.get(0))
+                .map_err(|_| StoreError::Sql)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(|_| StoreError::Sql)?);
+            }
+            Ok(out)
+        })
+        .await
+    }
+
     /// List `(member_id, wrapped_at)` for `owner`'s grants on `(scope_id, epoch)`.
     /// Owner-scoped, so it returns only the caller's own membership entry — never the
     /// cross-member set (that would breach isolation and is a control-plane concern).

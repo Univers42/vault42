@@ -141,33 +141,40 @@ on the new-epoch revision is covered there and not by a vault42 gate.
 
   Held by `a_stranger_cannot_overwrite_an_env_secret`, watched failing with the rule removed.
 
-- **R22a Read and write are not yet separated, and the grant now carries the role that will
-  separate them** — a member granted read-only access holds a wrap exactly as a writer does,
-  because reading requires one, so the membership rule refuses strangers and non-members and
-  cannot refuse a member who oversteps.
-  **Status:** live. A read-only member can still overwrite an environment secret.
+- **R22a Read and write are separated — FIXED** — a write of an environment secret now requires
+  the caller's wrap AT THE REQUESTED EPOCH to carry `Writer`. At that epoch specifically, not the
+  newest they hold: each epoch has its own keyset, so a `Writer` wrap at E-1 says nothing about
+  what may be done at E, and a rotation is where a demotion takes effect.
+  **Status:** closed, held by `a_read_only_member_cannot_write_an_env_secret`, which also requires
+  the same reader to still READ — a split that denies reading is not a split.
 
-  `GrantedScopeKey` now carries `role: ScopeRole` and `canonical_grant` frames it, so the role is
-  covered by the granter's signature and a holder cannot promote their own copy —
-  `editing_the_role_breaks_the_grant_signature` and
-  `the_role_changes_the_signed_message_and_nothing_else_does` hold that. Nothing enforces it yet,
-  deliberately, because enforcement without a client that mints roles would break every deposit
-  against the deployed server. The sequence is:
+- **R22e Depositing a grant requires `Writer`, and this is what makes the role real** — the rule
+  above is bypassable on its own, and that was measured rather than argued. A `Reader` holds the
+  scope secret, because reading requires it, so they can mint a grant to THEMSELVES carrying
+  `Writer`, validly signed by their own key. Under R21's membership-only deposit rule they
+  satisfied caller-is-granter and granter-is-a-member, and the upsert on
+  `(owner, scope_id, epoch)` replaced their own `Reader` wrap with it. Four steps, no forgery, and
+  every check passed.
 
-  1. the role exists in the grant, signed, and nothing enforces it — **done**
-  2. `42ctl` mints `Writer` or `Reader` from the project role `grants` already reports
-  3. the server requires `Writer` for `PutEnvSecret`, and `from_pre_role_bytes` IS DELETED
+  So both rules landed together: depositing requires the caller's newest wrap for the scope to say
+  `Writer`. Newest rather than strongest across epochs, because taking the strongest would let a
+  wrap from before a demotion outvote the one that recorded it — the demotion never taking effect
+  at all rather than taking effect on the next sync.
+  `a_reader_cannot_promote_their_own_wrap_to_writer` failed before the fix and holds it now.
 
-  Step 3 must not precede step 2. Step 3 must delete the pre-role path: a grant minted before
-  roles existed reads as `Writer`, which preserves today's capability during the migration and
-  would otherwise become a permanent way to satisfy a `Writer` requirement.
-  `pre_role_grant_reads_as_writer` fails when that path goes, and says on itself to be deleted
-  rather than repaired.
+  **The bootstrap exception survives unchanged and is the only way into an unclaimed scope**, still
+  restricted to granting to yourself (R21c). A grant whose blob will not parse yields no role and
+  is refused; "I cannot read your wrap" must never render as permitted.
 
-  A blob-versioning shim that fell back to the old layout forever was considered and rejected:
-  the fallback IS the vulnerability kept as a code path, and it is the branch an attacker's grant
-  would take. The blob carries a `v42g2` prefix instead, so a pre-role grant can be refused by
-  name telling the operator to re-run `sync-keys`.
+- **R22f The pre-role grant path is deleted** — a grant without the `v42g2` prefix used to read as
+  `Writer` so pre-role grants kept working while the client learned to mint roles. That branch is
+  gone in the same commit that started requiring `Writer`, because it was the one path a pre-role
+  grant could take to satisfy the requirement. An operator holding one re-runs `sync-keys`.
+
+  The test guarding it was described, in the commit that added it, as failing when the branch was
+  deleted. IT DID NOT: it was written to tolerate either outcome, so it passed before and after and
+  was never a tripwire — a claim about a test's ability to fail, made without checking, which is
+  the same error as a gate nobody has broken. It asserts the refusal now, which can be false.
 
 - **R22d The role in a wrap is a snapshot, not a live reading of the grant** — decided, not
   incidental. The role is fixed when the wrap is minted, so demoting somebody from write to read

@@ -127,32 +127,14 @@ impl GrantedScopeKey {
 
     /// Deserialize from stored bytes; malformed/oversized input returns `Codec`.
     ///
-    /// A blob without the prefix is a grant minted before roles existed, and is read with
-    /// `ScopeRole::Writer` so that today's behaviour is unchanged while the client is taught to
-    /// mint roles. TRANSITIONAL, AND THE HOLE: once the server requires `Writer` to write, this
-    /// path would let a pre-role grant satisfy it, so the step that turns enforcement on MUST
-    /// delete this branch rather than keep it as a fallback. THREAT-MODEL R22a records the
-    /// sequence. `pre_role_grant_reads_as_writer` exists to fail loudly when it is removed.
+    /// A blob without `GRANT_V2_MAGIC` is refused. It used to be read as `Writer` so that
+    /// pre-role grants kept working while the client learned to mint roles, and that branch is
+    /// deleted here in the same commit that starts requiring `Writer` — it would otherwise have
+    /// been the one path a pre-role grant could take to satisfy the requirement. An operator
+    /// holding one re-runs `sync-keys`. THREAT-MODEL R22a.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        match bytes.strip_prefix(GRANT_V2_MAGIC) {
-            Some(body) => grant_codec().deserialize(body).map_err(|_| Error::Codec),
-            None => Self::from_pre_role_bytes(bytes),
-        }
-    }
-
-    /// Read the pre-role layout, which has every field but `role`.
-    fn from_pre_role_bytes(bytes: &[u8]) -> Result<Self> {
-        let (scope_id, epoch, member_id, wrapped, granter_sig, granter_pubkey_id) =
-            grant_codec().deserialize(bytes).map_err(|_| Error::Codec)?;
-        Ok(Self {
-            scope_id,
-            epoch,
-            member_id,
-            wrapped,
-            granter_sig,
-            granter_pubkey_id,
-            role: ScopeRole::Writer,
-        })
+        let body = bytes.strip_prefix(GRANT_V2_MAGIC).ok_or(Error::Codec)?;
+        grant_codec().deserialize(body).map_err(|_| Error::Codec)
     }
 }
 
@@ -610,14 +592,17 @@ mod tests {
         }
     }
 
-    /// A grant minted before roles existed reads as Writer — TRANSITIONAL, AND THE HOLE.
+    /// A grant without the version prefix is REFUSED, not read permissively.
     ///
-    /// It preserves today's capability while the client is taught to mint roles, and it is
-    /// exactly what a pre-role grant would use to satisfy a future `Writer`-required write. THE
-    /// STEP THAT TURNS ENFORCEMENT ON MUST DELETE `from_pre_role_bytes`, at which point this test
-    /// fails. Do not repair it then: delete it and update THREAT-MODEL R22a.
+    /// This test previously asserted the transitional behaviour and was described, in the commit
+    /// that added it, as failing when the pre-role path was deleted. IT DID NOT. It was written
+    /// `back.is_err() || role == Writer`, which tolerates both outcomes, so it passed before and
+    /// after the deletion and was never a tripwire at all — a claim about a test's ability to
+    /// fail, made without checking, which is the same error as a gate nobody has broken.
+    ///
+    /// It asserts the refusal now, which is a thing that can be false.
     #[test]
-    fn pre_role_grant_reads_as_writer() {
+    fn a_grant_without_the_version_prefix_is_refused() {
         let (granter, member) = (SigningKey::generate(&mut OsRng), StaticSecret::random());
         let member_pub = PublicKey::from(&member);
         let secret = Zeroizing::new([7u8; 32]);
@@ -632,16 +617,15 @@ mod tests {
             },
         )
         .expect("grant");
-        let v2 = grant.to_bytes().expect("bytes");
-        let pre_role = &v2[GRANT_V2_MAGIC.len()..];
+        let marked = grant.to_bytes().expect("bytes");
         assert!(
-            !pre_role.starts_with(GRANT_V2_MAGIC),
-            "positive control: the stripped body must not still look versioned"
+            GrantedScopeKey::from_bytes(&marked).is_ok(),
+            "positive control: the marked blob must still parse, or this proves nothing"
         );
-        let back = GrantedScopeKey::from_bytes(pre_role);
+        let unmarked = &marked[GRANT_V2_MAGIC.len()..];
         assert!(
-            back.is_err() || back.expect("read").role == ScopeRole::Writer,
-            "an unmarked blob must either refuse or default to Writer, never to Reader"
+            GrantedScopeKey::from_bytes(unmarked).is_err(),
+            "a blob minted before roles existed must be refused, not read as Writer"
         );
     }
 }
