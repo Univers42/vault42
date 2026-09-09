@@ -162,16 +162,24 @@ mod tests {
         assert_eq!(parse_contract_pub(None), Ok(None));
     }
 
+    /// A syntactically valid 32-byte key, deliberately patterned rather than random-looking.
+    ///
+    /// A contract public key is not secret, but a high-entropy hex literal in a `config.rs` is
+    /// indistinguishable from one to a scanner, and the honest fix is a fixture that is visibly
+    /// synthetic rather than an allowlist entry that would blind gitleaks to this whole file — which
+    /// is precisely where a real credential would appear. It still carries letters, so the
+    /// case-insensitivity assertion below is unaffected.
+    const PATTERNED_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
     /// A well-formed key is parsed, whitespace and case included.
     #[test]
     fn a_valid_key_is_accepted() {
-        let hex_key = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
-        let parsed = parse_contract_pub(Some(hex_key))
+        let parsed = parse_contract_pub(Some(PATTERNED_KEY))
             .expect("valid")
             .expect("some");
-        assert_eq!(hex::encode(parsed), hex_key);
-        assert!(parse_contract_pub(Some(&format!("  {hex_key}\n"))).is_ok());
-        assert!(parse_contract_pub(Some(&hex_key.to_uppercase())).is_ok());
+        assert_eq!(hex::encode(parsed), PATTERNED_KEY);
+        assert!(parse_contract_pub(Some(&format!("  {PATTERNED_KEY}\n"))).is_ok());
+        assert!(parse_contract_pub(Some(&PATTERNED_KEY.to_uppercase())).is_ok());
     }
 
     /// A key that is present but unusable is an error, never a quiet fall back to standalone.
@@ -181,13 +189,15 @@ mod tests {
     /// parse as standalone, which accepts any self-generated keypair with an unlimited quota.
     #[test]
     fn a_present_but_unusable_key_refuses_to_boot() {
+        let too_long = format!("{PATTERNED_KEY}ff");
+        let quoted = format!("\"{PATTERNED_KEY}\"");
         for bad in [
             "",
             "   ",
             "not hex at all",
             "d75a98",
-            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511aff",
-            "\"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a\"",
+            too_long.as_str(),
+            quoted.as_str(),
         ] {
             assert!(
                 parse_contract_pub(Some(bad)).is_err(),
