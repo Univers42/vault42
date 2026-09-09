@@ -33,7 +33,19 @@ jobs:
       - uses: actions/checkout@v4
       # Pulled explicitly rather than left to the gates: they check for the image and skip
       # when it is absent, and a skip must not be how this job succeeds.
-      - run: docker pull "$RUST_TOOLCHAIN_IMG"
+      #
+      # Retried because the registry rate-limits. One run failed on `toomanyrequests: Rate
+      # exceeded` with nothing wrong in the tree, and a red gate battery that means "the mirror
+      # was busy" teaches everyone to ignore a red gate battery.
+      - name: pull the toolchain image (retried; the registry rate-limits)
+        run: |
+          for attempt in 1 2 3 4 5; do
+            docker pull "$RUST_TOOLCHAIN_IMG" && exit 0
+            printf 'pull attempt %s failed; backing off\n' "$attempt"
+            sleep $((attempt * 15))
+          done
+          printf 'could not pull %s after 5 attempts\n' "$RUST_TOOLCHAIN_IMG"
+          exit 1
       - run: sh scripts/verify/run-gate-battery.sh --all --strict
 
   supply-chain:
