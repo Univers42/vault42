@@ -3365,6 +3365,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
+name = "vault42-authority"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum",
+ "base64",
+ "blake3",
+ "hex",
+ "r2d2",
+ "r2d2_sqlite",
+ "rand_core 0.6.4",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "subtle",
+ "thiserror 1.0.69",
+ "tokio",
+ "tower 0.5.3",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "vault42-contract",
+ "vault42-core",
+ "zeroize",
+]
+
+[[package]]
 name = "vault42-cli"
 version = "0.1.0"
 dependencies = [

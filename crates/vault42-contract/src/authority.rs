@@ -29,14 +29,17 @@ pub struct Authority {
 impl Authority {
     /// Load the signing key (env seed, persisted file, or freshly generated).
     pub fn load(cfg: &Config) -> anyhow::Result<Self> {
-        let signing = match &cfg.seed_hex {
+        Self::open(cfg.seed_hex.as_deref(), &cfg.key_path, cfg.ttl_days)
+    }
+
+    /// Load the signing key from explicit parts, so a consumer outside this crate need
+    /// not build a contract `Config` just to issue contracts.
+    pub fn open(seed_hex: Option<&str>, key_path: &str, ttl_days: i64) -> anyhow::Result<Self> {
+        let signing = match seed_hex {
             Some(hex_seed) => signing::from_hex_seed(hex_seed)?,
-            None => signing::load_or_create(&cfg.key_path)?,
+            None => signing::load_or_create(key_path)?,
         };
-        Ok(Self {
-            signing,
-            ttl_days: cfg.ttl_days,
-        })
+        Ok(Self { signing, ttl_days })
     }
 
     /// The hex of the authority public key — vault42's `VAULT42_CONTRACT_PUBKEY`.
