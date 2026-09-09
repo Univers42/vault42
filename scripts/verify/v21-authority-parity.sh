@@ -43,7 +43,14 @@ IMAGE="${RUST_TOOLCHAIN_IMG:-mini-baas-rust-toolchain:latest}"
 ROOT="$(CDPATH= cd "$(dirname "$0")/../.." && pwd)"
 CTL="$ROOT/../42ctl"
 NAME="v21-authority-$$"
-PORT=18446
+# Assigned by docker rather than fixed, and read back after the container starts.
+#
+# A fixed port made this gate fail with `Bind for 0.0.0.0:18446 failed: port is already
+# allocated`, which docker reports as exit 125 before any assertion runs — an infrastructure
+# error that reads nothing like "another suite is using this port". The QA battery in ../42ctl
+# publishes the same number for its own authority container, so the two collide whenever they
+# overlap on one machine, and they would collide on any CI runner that ran both.
+PORT=
 WORK="${TMPDIR:-/tmp}/v21-$$"
 
 skip() {
@@ -83,7 +90,7 @@ declared_for_diff() {
 
 start_authority() {
 	mkdir -p "$WORK"
-	docker run -d --name "$NAME" -p "127.0.0.1:$PORT:8444" \
+	docker run -d --name "$NAME" -p "127.0.0.1::8444" \
 		-v "$ROOT":/work -w /work \
 		-v vault42-cargo-registry:/usr/local/cargo/registry \
 		-v vault42-cargo-git:/usr/local/cargo/git \
@@ -93,6 +100,8 @@ start_authority() {
 		-e RUST_LOG=warn -e NO_COLOR=1 \
 		"$IMAGE" sh -c 'cargo build -q -p vault42-authority --locked && exec ./target/debug/vault42-authority' \
 		>/dev/null
+	PORT="$(docker port "$NAME" 8444/tcp | head -1 | sed 's/.*://')"
+	[ -n "$PORT" ] || fail "docker published no port for $NAME"
 }
 
 # Wait for /healthz and probe every route in ONE container.
@@ -156,9 +165,32 @@ assert_parity_with_the_client() {
 		printf '  SKIP the parity half: ../42ctl is absent, so the client surface is unknown\n'
 		return 0
 	}
+	assert_the_client_surface_was_actually_found
 	absent="$(comm -23 "$WORK/client.txt" "$WORK/declared.txt")"
 	[ -z "$absent" ] || fail "42ctl calls routes the authority does not serve: $(echo "$absent" | tr '\n' ' ')"
 	printf '  all %s control-plane paths 42ctl calls are served\n' "$(wc -l <"$WORK/client.txt" | tr -d ' ')"
+}
+
+# The positive control for the set difference above, which is an absence assertion and passes
+# when its haystack is empty.
+#
+# `client_paths` scrapes route strings out of 42ctl's source with two regexes: bare "/v1/..."
+# literals and `format!("...")` calls. A refactor that moves route construction into a builder,
+# a constant, or a struct field satisfies neither, and the extraction then yields NOTHING. The
+# set difference over an empty set is empty, so the gate reports "all 0 control-plane paths
+# 42ctl calls are served" and passes — green, with the count printed, having compared nothing.
+# That is not hypothetical: 42ctl's adapters are being rewritten around an EndpointArgs struct
+# as this is written.
+#
+# Anchoring on two paths rather than a count, because a count drifts with every route added and
+# would be edited until it stopped failing. One anchor is a bare literal and the other carries a
+# path parameter, so a break in EITHER regex is caught rather than only the total loss of both.
+assert_the_client_surface_was_actually_found() {
+	for anchor in /v1/auth/me /v1/orgs/probe/members; do
+		grep -qx "$anchor" "$WORK/client.txt" || fail \
+			"the client scrape did not find $anchor, so it has stopped reading 42ctl's routes; \
+the parity check below would pass by comparing nothing"
+	done
 }
 
 main() {
