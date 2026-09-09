@@ -250,6 +250,9 @@ async fn write(
             "value must be at most {MAX_VALUE_LEN} bytes"
         )));
     }
+    if value.is_secret {
+        crate::validate::check_sealed(&value.value).map_err(Error::BadRequest)?;
+    }
     app.store
         .put_variable(UpsertVariable {
             scope_kind: kind.to_string(),

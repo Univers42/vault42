@@ -385,8 +385,44 @@ async fn keys_and_values_are_validated_at_the_boundary() {
     );
 }
 
+/// Seal a payload to a throwaway scope key and return base64 of the opaque wire bytes, exactly
+/// as a client stores a secret variable.
+fn sealed_value() -> String {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    let (keyset, _secret) = vault42_core::generate_keyset([8u8; 16], 1);
+    let author = vault42_core::Identity::generate();
+    let recipients = vault42_core::scope_recipients(&keyset, None);
+    let envelope = vault42_core::seal(
+        b"TOPSECRET=value",
+        vault42_core::Metadata {
+            version: 2,
+            secret_id: "var".into(),
+            tenant: "self".into(),
+            owner: "scope:env".into(),
+            rev: 1,
+            content_type: "env".into(),
+            recovery_optin: false,
+            project_id: "p".into(),
+            relative_path: String::new(),
+            kind: vault42_core::Kind::Generic,
+            mode: vault42_core::DEFAULT_MODE,
+        },
+        &recipients,
+        author.signing_key(),
+    )
+    .expect("seal");
+    STANDARD.encode(envelope.to_bytes().expect("encode"))
+}
+
+/// A secret variable round-trips byte-for-byte, and a value merely LABELLED secret is refused.
+///
+/// `is_secret` names a property rather than decorating a row. In a vault that claims the server
+/// cannot read what it holds, a flag by that name on a value the server can read is the one thing
+/// an operator would trust without checking, so storing plaintext under it is refused outright.
+/// The authority still never opens the envelope — parsing its structure is what proves it sealed.
 #[tokio::test]
-async fn is_secret_round_trips_without_changing_how_the_value_is_held() {
+async fn is_secret_round_trips_and_refuses_a_value_that_is_not_sealed() {
     let app = fresh_app("v4-secret", None);
     let (token, org, _, _) = scaffold(&app, "v7@archicode.codes", "secretco").await;
     send(
@@ -398,15 +434,34 @@ async fn is_secret_round_trips_without_changing_how_the_value_is_held() {
         ),
     )
     .await;
-    send(
+    for pretender in ["hunter2", "AAAAsealed"] {
+        let (status, body) = send(
+            &app,
+            put_as(
+                &format!("/v1/orgs/{org}/variables/FAKE"),
+                &token,
+                json!({"value": pretender, "is_secret": true}),
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{pretender:?} must not be storable as a secret: {body}"
+        );
+    }
+    let blob = sealed_value();
+    let (status, body) = send(
         &app,
         put_as(
             &format!("/v1/orgs/{org}/variables/SEALED"),
             &token,
-            json!({"value": "AAAAsealed", "is_secret": true}),
+            json!({"value": blob, "is_secret": true}),
         ),
     )
     .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
     let (status, body) = send(
         &app,
         get_with(
@@ -419,10 +474,14 @@ async fn is_secret_round_trips_without_changing_how_the_value_is_held() {
     let rows = body.as_array().unwrap();
     let plain = rows.iter().find(|r| r["key"] == "PLAIN").unwrap();
     let sealed = rows.iter().find(|r| r["key"] == "SEALED").unwrap();
+    assert!(
+        !rows.iter().any(|r| r["key"] == "FAKE"),
+        "the refused value was never stored: {body}"
+    );
     assert_eq!(plain["is_secret"], false);
     assert_eq!(sealed["is_secret"], true);
     assert_eq!(
-        sealed["value"], "AAAAsealed",
+        sealed["value"], blob,
         "the blob is returned exactly as stored"
     );
 }
