@@ -45,11 +45,49 @@ impl VaultSvc {
         caller: &Principal,
         req: WrapScopeKeyRequest,
     ) -> Result<WrapScopeKeyResponse, Status> {
-        require_caller_is_granter(caller, &req.granter_pubkey)?;
+        self.require_may_grant(caller, &req).await?;
         let target = scope_target(&req);
         self.store_one_rewrap(req, None).await?;
         self.emit_audit(caller, "wrap_scope_key", &target).await;
         Ok(WrapScopeKeyResponse { stored: true })
+    }
+
+    /// Authorize a scope-key deposit: the caller must be the granter, and the granter must
+    /// already hold a wrap for this scope.
+    ///
+    /// Holding a wrap IS the capability. Opening one is the only way to have the scope secret,
+    /// and having the secret is the only way to re-wrap it to somebody else, so "is a member"
+    /// and "can legitimately grant" are the same condition. That is the whole rule, and it is
+    /// decidable from state this server already holds — which matters, because the server never
+    /// learns what a scope IS beyond an opaque id, and the authority's RBAC is not reachable on
+    /// a per-request path without giving up offline contract verification.
+    ///
+    /// The one exception is bootstrapping. `vault env-init` creates a scope by self-wrapping,
+    /// and at that instant nobody holds a wrap for it, so the rule above would refuse the only
+    /// call that could ever satisfy it. A deposit into an UNCLAIMED scope is therefore allowed
+    /// when the caller is granting to themselves — which is what env-init does and what an
+    /// attacker gains nothing from, since it creates a scope in their own namespace.
+    ///
+    /// What this leaves open is squatting: scope ids are `blake3(project ‖ env)`, so anyone who
+    /// knows both can self-wrap an unclaimed scope first and make the real `env-init` fail. That
+    /// is a loud refusal rather than a silent substitution, and it is recorded as R21c.
+    async fn require_may_grant(
+        &self,
+        caller: &Principal,
+        req: &WrapScopeKeyRequest,
+    ) -> Result<(), Status> {
+        require_caller_is_granter(caller, &req.granter_pubkey)?;
+        let standing = self
+            .store
+            .scope_standing(&req.scope_id, &caller.id)
+            .await
+            .map_err(map_store)?;
+        if standing.granter_is_member || (!standing.claimed && req.member_id == caller.id) {
+            return Ok(());
+        }
+        Err(Status::permission_denied(
+            "only a member of this scope may deposit a wrap for it",
+        ))
     }
 
     /// Verify one rewrap (granter signature + the blob's bound `scope_id`/`epoch` matching
@@ -245,19 +283,14 @@ mod tests {
         }
     }
 
-    /// Characterises an OPEN gap (THREAT-MODEL R21): this test passing means the vault is
-    /// vulnerable, and this test failing means somebody fixed it.
+    /// The attack that R21 described: an attacker signing their OWN grant cannot overwrite a
+    /// member's wrap, because they hold no wrap for that scope.
     ///
-    /// WHEN THIS FAILS, DO NOT REPAIR IT. Delete it and update R21, because its failure is the
-    /// good news. It is written this way because `require_caller_is_granter` reads like the
-    /// deposit path is authorized, and the only durable correction to that impression is a test
-    /// that demonstrates otherwise sitting beside it.
-    ///
-    /// The attacker replays nobody's grant. They generate a keypair, sign their OWN grant
-    /// wrapping a secret of their choosing to the victim's public key, and deposit it as
-    /// themselves — so caller and granter are the same principal and the rule is satisfied.
+    /// This test used to assert the opposite and pass, which is how the gap was measured rather
+    /// than argued. Caller-is-granter alone never stopped it — an attacker signing their own
+    /// grant satisfies that trivially — so what refuses it is membership.
     #[tokio::test]
-    async fn an_attacker_signing_their_own_grant_still_overwrites_a_victims_wrap() {
+    async fn an_attacker_signing_their_own_grant_cannot_overwrite_a_victims_wrap() {
         let svc = fresh_svc("self-signed-attack");
         let (admin, victim, attacker) = (
             Identity::generate(),
@@ -267,39 +300,97 @@ mod tests {
         let victim_p = Principal::from_pubkey(victim.author_public().to_bytes());
         let scope = [9u8; 16];
 
+        bootstrap_scope(&svc, &admin, scope).await;
         let honest = signed_grant(&admin, &victim, scope, 1);
         let admin_p = Principal::from_pubkey(admin.author_public().to_bytes());
         svc.op_wrap_scope_key(&admin_p, wrap_req(&victim_p, &admin, scope, honest.clone()))
             .await
-            .expect("the admin enrols the victim");
+            .expect("positive control: the admin holds the scope, so enrolling the victim works");
 
         let hostile = signed_grant(&attacker, &victim, scope, 1);
         let attacker_p = Principal::from_pubkey(attacker.author_public().to_bytes());
-        let outcome = svc
+        let refusal = svc
             .op_wrap_scope_key(
                 &attacker_p,
                 wrap_req(&victim_p, &attacker, scope, hostile.clone()),
             )
-            .await;
+            .await
+            .expect_err("an outsider must not deposit into this scope");
+        assert_eq!(refusal.code(), tonic::Code::PermissionDenied);
 
+        assert_ne!(
+            honest, hostile,
+            "positive control: the two grants must differ, or the check below is empty"
+        );
         let stored = svc
             .op_get_scope_key(&victim_p, &hex::encode(scope), 1)
             .await
-            .expect("the victim still has a row");
-        assert_ne!(
-            honest, hostile,
-            "positive control: the two grants must differ, or the comparison below is empty"
-        );
-        assert!(
-            outcome.is_ok(),
-            "R21 may have been fixed: the hostile deposit was refused. Delete this test and \
-             update THREAT-MODEL rather than making it pass again."
-        );
+            .expect("the victim still has a wrap");
         assert_eq!(
-            stored.granted_blob, hostile,
-            "R21 may have been fixed: the victim's wrap survived. Delete this test and update \
-             THREAT-MODEL rather than making it pass again."
+            stored.granted_blob, honest,
+            "the victim must still hold the admin's grant, not the attacker's"
         );
+    }
+
+    /// Replaying somebody else's grant is refused too, which is what caller-is-granter closes.
+    #[tokio::test]
+    async fn a_caller_cannot_deposit_a_grant_it_did_not_sign() {
+        let svc = fresh_svc("replay");
+        let (admin, member, intruder) = (
+            Identity::generate(),
+            Identity::generate(),
+            Identity::generate(),
+        );
+        let member_p = Principal::from_pubkey(member.author_public().to_bytes());
+        let scope = [11u8; 16];
+        bootstrap_scope(&svc, &admin, scope).await;
+        let blob = signed_grant(&admin, &member, scope, 1);
+        let intruder_p = Principal::from_pubkey(intruder.author_public().to_bytes());
+        let refusal = svc
+            .op_wrap_scope_key(
+                &intruder_p,
+                wrap_req(&member_p, &admin, scope, blob.clone()),
+            )
+            .await
+            .expect_err("replaying the admin's grant must be refused");
+        assert_eq!(refusal.code(), tonic::Code::PermissionDenied);
+        let admin_p = Principal::from_pubkey(admin.author_public().to_bytes());
+        svc.op_wrap_scope_key(&admin_p, wrap_req(&member_p, &admin, scope, blob))
+            .await
+            .expect("positive control: the admin depositing its own grant still works");
+    }
+
+    /// An unclaimed scope may be created only by granting to yourself.
+    #[tokio::test]
+    async fn creating_a_scope_is_only_allowed_as_a_self_wrap() {
+        let svc = fresh_svc("bootstrap-rule");
+        let (creator, other) = (Identity::generate(), Identity::generate());
+        let other_p = Principal::from_pubkey(other.author_public().to_bytes());
+        let creator_p = Principal::from_pubkey(creator.author_public().to_bytes());
+        let scope = [13u8; 16];
+        let to_other = signed_grant(&creator, &other, scope, 1);
+        let refusal = svc
+            .op_wrap_scope_key(&creator_p, wrap_req(&other_p, &creator, scope, to_other))
+            .await
+            .expect_err("an unclaimed scope cannot be opened by granting it to somebody else");
+        assert_eq!(refusal.code(), tonic::Code::PermissionDenied);
+        bootstrap_scope(&svc, &creator, scope).await;
+    }
+
+    /// Establish `scope` the way `vault env-init` does: the creator self-wraps, which is the
+    /// only deposit into an unclaimed scope the server accepts.
+    ///
+    /// Every test below needs this because the server now requires a granter to hold the scope
+    /// before granting it onward. Depositing straight to a member without it was never a
+    /// sequence the client could perform — an admin can only build a grant from the scope
+    /// secret, and the only ways to have that secret are creating the scope or opening your own
+    /// wrap of it.
+    async fn bootstrap_scope(svc: &VaultSvc, creator: &Identity, scope: [u8; 16]) {
+        let creator_p = Principal::from_pubkey(creator.author_public().to_bytes());
+        let self_grant = signed_grant(creator, creator, scope, 1);
+        svc.op_wrap_scope_key(&creator_p, wrap_req(&creator_p, creator, scope, self_grant))
+            .await
+            .expect("the creator self-wraps a scope nobody holds yet");
     }
 
     #[tokio::test]
@@ -310,6 +401,7 @@ mod tests {
         let scope = [1u8; 16];
         let blob = signed_grant(&granter, &member, scope, 1);
         let admin = Principal::from_pubkey(granter.author_public().to_bytes());
+        bootstrap_scope(&svc, &granter, scope).await;
         svc.op_wrap_scope_key(&admin, wrap_req(&member_p, &granter, scope, blob.clone()))
             .await
             .expect("wrap");
@@ -369,6 +461,7 @@ mod tests {
         let scope = [3u8; 16];
         let blob = signed_grant(&granter, &member, scope, 1);
         let admin = Principal::from_pubkey(granter.author_public().to_bytes());
+        bootstrap_scope(&svc, &granter, scope).await;
         svc.op_wrap_scope_key(&admin, wrap_req(&member_p, &granter, scope, blob))
             .await
             .expect("wrap");

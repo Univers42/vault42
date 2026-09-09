@@ -22,6 +22,7 @@
 //! new scope key exists only in the rotating client's memory, so a rotation that omits the
 //! caller leaves nobody able to open the secrets it just re-sealed.
 
+use crate::ops_write::map_store;
 use crate::principal::Principal;
 use crate::svc::VaultSvc;
 use tonic::Status;
@@ -46,6 +47,8 @@ impl VaultSvc {
         } = req;
         require_caller_rewrap(caller, &rewraps)?;
         require_caller_granted_every_rewrap(caller, &rewraps)?;
+        self.require_rotator_holds_the_scope(caller, &scope_id)
+            .await?;
         let mut rewrapped = 0u32;
         for rewrap in rewraps {
             self.store_one_rewrap(rewrap, Some(new_epoch)).await?;
@@ -54,6 +57,39 @@ impl VaultSvc {
         self.emit_audit(caller, "scope_rotate", &format!("{scope_id}@{new_epoch}"))
             .await;
         Ok(RotateScopeResponse { rewrapped })
+    }
+}
+
+impl VaultSvc {
+    /// Refuse a rotation of a scope the caller does not already hold.
+    ///
+    /// Rotation is the second door onto the same store: it calls `store_one_rewrap` directly,
+    /// once per member, so the membership rule enforced on the single-deposit path has to be
+    /// enforced here too or an attacker simply sends a one-member rotation instead.
+    ///
+    /// There is no bootstrap exception here, deliberately. `env-init` creates a scope; rotation
+    /// re-keys one that exists. A rotation of a scope nobody holds is not a legitimate first
+    /// step, it is a claim on somebody else's scope id.
+    ///
+    /// Checked once for the whole batch rather than per rewrap, and before anything is
+    /// persisted: a per-rewrap check would let the caller's own rewrap land first and then
+    /// authorize the rest by the row it just created.
+    async fn require_rotator_holds_the_scope(
+        &self,
+        caller: &Principal,
+        scope_id: &str,
+    ) -> Result<(), Status> {
+        let standing = self
+            .store
+            .scope_standing(scope_id, &caller.id)
+            .await
+            .map_err(map_store)?;
+        if standing.granter_is_member {
+            return Ok(());
+        }
+        Err(Status::permission_denied(
+            "only a member of this scope may rotate it",
+        ))
     }
 }
 
@@ -174,6 +210,36 @@ mod tests {
         .expect("encode")
     }
 
+    /// Establish `scope` the way `vault env-init` does: the creator self-wraps.
+    ///
+    /// The server now requires a granter to hold a scope before granting it onward, so a test
+    /// depositing straight to a member models a sequence the client cannot perform — an admin
+    /// builds a grant from the scope secret, and the only ways to have that secret are creating
+    /// the scope or opening your own wrap of it.
+    async fn bootstrap_scope(
+        svc: &VaultSvc,
+        creator: &Identity,
+        scope_secret: &Zeroizing<[u8; 32]>,
+        scope: [u8; 16],
+        epoch: u32,
+    ) {
+        let creator_p = Principal::from_pubkey(creator.author_public().to_bytes());
+        let creator_pub = creator.encryption_public();
+        svc.op_wrap_scope_key(
+            &creator_p,
+            wrap_req(
+                &creator_p,
+                &creator_pub,
+                creator,
+                scope_secret,
+                scope,
+                epoch,
+            ),
+        )
+        .await
+        .expect("the creator self-wraps a scope nobody holds yet");
+    }
+
     /// Build a wrap request depositing `granter`'s grant of `scope_secret` to `member` for
     /// `(scope, epoch)` — exactly the bytes a granting admin sends to WrapScopeKey.
     fn wrap_req(
@@ -251,6 +317,7 @@ mod tests {
         let (keyset, scope_secret) = generate_keyset(scope, 1);
         let envelope = seal_to_scope(&keyset, &author, 1, plaintext);
         let member_pub = member.encryption_public();
+        bootstrap_scope(&svc, &granter, &scope_secret, scope, 1).await;
         svc.op_wrap_scope_key(
             &admin,
             wrap_req(&member_p, &member_pub, &granter, &scope_secret, scope, 1),
@@ -284,6 +351,54 @@ mod tests {
     /// FRESH scope keypair, re-wrapped ONLY to the remaining member), the remaining member
     /// opens the new secret; the removed member has no epoch-2 wrap (NotFound) AND its old
     /// epoch-1 scope secret cannot open the epoch-2 envelope (sealed to the new scope key).
+    /// An outsider cannot rotate a scope they do not hold, which is the second door onto the
+    /// same store. Closing only the single-deposit path would leave a one-member rotation as an
+    /// equivalent way to overwrite any member's wrap (THREAT-MODEL R21).
+    #[tokio::test]
+    async fn an_outsider_cannot_rotate_a_scope_they_do_not_hold() {
+        let svc = fresh_svc("rotate-outsider");
+        let (granter, victim, attacker) = (
+            Identity::generate(),
+            Identity::generate(),
+            Identity::generate(),
+        );
+        let victim_p = Principal::from_pubkey(victim.author_public().to_bytes());
+        let attacker_p = Principal::from_pubkey(attacker.author_public().to_bytes());
+        let scope = [5u8; 16];
+        let (_k1, s1) = generate_keyset(scope, 1);
+        bootstrap_scope(&svc, &granter, &s1, scope, 1).await;
+
+        let (_k2, s2) = generate_keyset(scope, 2);
+        let attacker_pub = attacker.encryption_public();
+        let victim_pub = victim.encryption_public();
+        let hostile = RotateScopeRequest {
+            scope_id: hex::encode(scope),
+            new_epoch: 2,
+            rewraps: vec![
+                wrap_req(&attacker_p, &attacker_pub, &attacker, &s2, scope, 2),
+                wrap_req(&victim_p, &victim_pub, &attacker, &s2, scope, 2),
+            ],
+        };
+        let refusal = svc
+            .op_rotate_scope(&attacker_p, hostile)
+            .await
+            .expect_err("an outsider must not rotate somebody else's scope");
+        assert_eq!(refusal.code(), tonic::Code::PermissionDenied);
+
+        let creator_p = Principal::from_pubkey(granter.author_public().to_bytes());
+        let creator_pub = granter.encryption_public();
+        svc.op_rotate_scope(
+            &creator_p,
+            RotateScopeRequest {
+                scope_id: hex::encode(scope),
+                new_epoch: 2,
+                rewraps: vec![wrap_req(&creator_p, &creator_pub, &granter, &s2, scope, 2)],
+            },
+        )
+        .await
+        .expect("positive control: the scope's own member may still rotate it");
+    }
+
     #[tokio::test]
     async fn rotation_revokes_removed_member_forward_secrecy() {
         let svc = fresh_svc("v15");
@@ -294,6 +409,7 @@ mod tests {
         let admin = Principal::from_pubkey(granter.author_public().to_bytes());
         let scope = [2u8; 16];
         let (_k1, s1) = generate_keyset(scope, 1);
+        bootstrap_scope(&svc, &granter, &s1, scope, 1).await;
         for member in [
             (&keep_p, keep.encryption_public()),
             (&drop_p, drop_member.encryption_public()),

@@ -29,6 +29,17 @@ pub struct ScopeKeyPut {
     pub granter_pubkey: String,
 }
 
+/// What the store knows about who may grant for a scope, which is the only basis it HAS for
+/// that decision: it never learns what a scope is beyond an opaque id.
+///
+/// `claimed` distinguishes bootstrapping a new scope from depositing into an established one.
+/// `granter_is_member` is the capability itself — holding a wrap for a scope is what makes you
+/// able to pass it on, because opening one is the only way to have the secret to re-wrap.
+pub struct ScopeStanding {
+    pub claimed: bool,
+    pub granter_is_member: bool,
+}
+
 /// One member's wrap for a scope/epoch: the opaque grant blob and the granter key.
 pub struct ScopeKeyRow {
     pub granted_blob: String,
@@ -84,6 +95,35 @@ impl Store {
             )
             .optional()
             .map_err(|_| StoreError::Sql)
+        })
+        .await
+    }
+
+    /// Whether the scope has any wrap at all, and whether `granter_id` holds one of them.
+    ///
+    /// One statement rather than two queries, so a deposit cannot interleave between the reads
+    /// and be judged against a scope that changed underneath it. Epoch is deliberately not a
+    /// filter: a rotation grants at a NEW epoch while the rotator holds the OLD one, so
+    /// requiring a wrap at the requested epoch would refuse every legitimate rotation.
+    pub async fn scope_standing(
+        &self,
+        scope_id: &str,
+        granter_id: &str,
+    ) -> Result<ScopeStanding, StoreError> {
+        let (scope_id, granter_id) = (scope_id.to_string(), granter_id.to_string());
+        self.run(move |c| {
+            let (total, mine): (i64, i64) = c
+                .query_row(
+                    "SELECT COUNT(*), COALESCE(SUM(owner = ?2), 0) FROM scope_keys \
+                     WHERE scope_id = ?1",
+                    params![scope_id, granter_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(|_| StoreError::Sql)?;
+            Ok(ScopeStanding {
+                claimed: total > 0,
+                granter_is_member: mine > 0,
+            })
         })
         .await
     }

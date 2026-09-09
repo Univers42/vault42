@@ -30,6 +30,10 @@ pub enum StoreError {
     Quota,
     #[error("storage error")]
     Sql,
+    /// The backend cannot answer this soundly. Distinct from `Sql` because a wrong answer here
+    /// is an authorization decision, and "I cannot tell" must never be rendered as "permitted".
+    #[error("this storage backend cannot answer that safely")]
+    Unsupported,
 }
 
 /// The schema: a versioned secrets table and a hash-chained audit table.

@@ -18,7 +18,7 @@
 
 use crate::audit_store::{AuditRow, Event};
 use crate::env_store::{EnvSecretPut, EnvSecretRow};
-use crate::scope_store::{ScopeKeyPut, ScopeKeyRow};
+use crate::scope_store::{ScopeKeyPut, ScopeKeyRow, ScopeStanding};
 use crate::secret_read::SecretRow;
 use crate::secret_write::PutSecret;
 use crate::store::{Store, StoreError};
@@ -69,6 +69,14 @@ pub trait SecretStore: Send + Sync {
         scope_id: &str,
         epoch: i64,
     ) -> Result<Option<ScopeKeyRow>, StoreError>;
+
+    /// Whether the scope has any wrap, and whether `granter_id` holds one. The only basis the
+    /// server has for deciding who may grant a scope key, since it never learns what a scope is.
+    async fn scope_standing(
+        &self,
+        scope_id: &str,
+        granter_id: &str,
+    ) -> Result<ScopeStanding, StoreError>;
 
     /// List `(member_id, wrapped_at)` the caller may see for `(scope_id, epoch)`.
     async fn list_scope_members(
@@ -155,6 +163,14 @@ impl SecretStore for Store {
         epoch: i64,
     ) -> Result<Option<ScopeKeyRow>, StoreError> {
         Store::get_scope_key(self, owner, scope_id, epoch).await
+    }
+
+    async fn scope_standing(
+        &self,
+        scope_id: &str,
+        granter_id: &str,
+    ) -> Result<ScopeStanding, StoreError> {
+        Store::scope_standing(self, scope_id, granter_id).await
     }
 
     async fn list_scope_members(

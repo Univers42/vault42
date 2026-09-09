@@ -118,5 +118,11 @@ pub(crate) fn map_store(error: StoreError) -> Status {
         StoreError::Conflict => Status::failed_precondition("version conflict"),
         StoreError::Quota => Status::resource_exhausted("per-owner secret quota exceeded"),
         StoreError::Sql => Status::internal("storage error"),
+        // `failed_precondition`, not `internal`: the request was well formed and the backend is
+        // healthy, it simply cannot decide this safely. Rendering it as an internal error would
+        // invite a retry that can never succeed.
+        StoreError::Unsupported => {
+            Status::failed_precondition("this storage backend cannot answer that safely")
+        }
     }
 }

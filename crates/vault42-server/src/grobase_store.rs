@@ -21,7 +21,7 @@
 use crate::audit_store::{chain_hash, AuditRow, Event};
 use crate::env_store::{EnvSecretPut, EnvSecretRow};
 use crate::jwt;
-use crate::scope_store::{ScopeKeyPut, ScopeKeyRow};
+use crate::scope_store::{ScopeKeyPut, ScopeKeyRow, ScopeStanding};
 use crate::secret_read::SecretRow;
 use crate::secret_write::PutSecret;
 use crate::store::StoreError;
@@ -281,6 +281,22 @@ impl SecretStore for GrobaseStore {
             json!({"op": "list", "filter": filter, "sort": {"wrapped_at": "desc"}, "limit": 1});
         let resp = self.exec(owner, SCOPE_KEYS_TABLE, body).await?;
         Ok(resp.rows.first().map(row_to_scope_key))
+    }
+
+    /// The grobase backend cannot answer this soundly, so it refuses rather than guessing.
+    ///
+    /// Deciding it needs every wrap for a scope across ALL owners, and this store is owner-scoped
+    /// by construction: `exec` runs each request as one owner, which is the property that makes
+    /// it safe. A cross-owner count would need a privileged query this seam does not have, and
+    /// answering `claimed: false` from an owner-scoped view would report an established scope as
+    /// unclaimed and hand a bootstrap to anyone who asked. Refusing is the only sound answer, and
+    /// this backend is off unless `VAULT42_STORE=grobase` names it exactly.
+    async fn scope_standing(
+        &self,
+        _scope_id: &str,
+        _granter_id: &str,
+    ) -> Result<ScopeStanding, StoreError> {
+        Err(StoreError::Unsupported)
     }
 
     async fn list_scope_members(
