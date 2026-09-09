@@ -90,7 +90,13 @@ flags `ORG_MODEL_ENABLED`/`RBAC_HIERARCHY_ENABLED`/`ENVIRONMENTS_ENABLED`/`GROUP
 migrations 077–084) vs crypto-plane decryption (vault42, flag `VAULT42_SCOPE_KEYS_ENABLED`, RPCs
 `WrapScopeKey`/`GetScopeKey`/`ListScopeMembers`/`RotateScope`/`PutEnvSecret`/`GetEnvSecret`/`ListEnvSecrets`).
 All default OFF (a missing flag = byte-parity). Design: `grobase/wiki/architecture/org-team-group-rbac.md`.
-Proof: grobase gates m162/m166/m168/m170/m172, vault42 gates v14/v15, live `scripts/test/e2e-rbac-scope-keys-live.sh`.
+**Status:** the proof this section used to cite did not exist. It named grobase gates
+m162/m166/m168/m170/m172, vault42 gates v14/v15, and `scripts/test/e2e-rbac-scope-keys-live.sh`;
+grobase is rejected and cannot run, and neither vault42 gate nor that script appears in any commit
+on any branch. What actually covers R12–R17 today: gates `v18-authority-scope-bridge` and
+`v25-scope-wrap-bookkeeping`, plus the QA session's scope-authz, scope-lifecycle, scope-attack and
+grant-scoping specs driving the real client. R12's specific claim that a removed member is blocked
+on the new-epoch revision is covered there and not by a vault42 gate.
 
 - **R12 Scope-key revocation is forward-secure only** — a removed member keeps anything already read
   and may have cached the old scope key; only post-rotation revisions are protected. Mitigate: removal

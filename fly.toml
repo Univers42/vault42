@@ -18,6 +18,11 @@ primary_region = "cdg"
   VAULT42_AUTH_SKEW_SECS = "120"
   VAULT42_MAX_SECRETS = "1000"
   RUST_LOG = "info"
+  # Without this every scope and environment RPC answers UNIMPLEMENTED, so `vault env-init`,
+  # `sync-keys`, `set-env`, `get-env` and `rotate-scope` all fail against the deployed server
+  # while working perfectly against a local one. It was never set here, so the subsystem 42ctl
+  # depends on has been off in production for as long as it has existed.
+  VAULT42_SCOPE_KEYS_ENABLED = "1"
 
 [[mounts]]
   source = "vault42_data"
