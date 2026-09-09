@@ -200,10 +200,15 @@ Things that will mislead you if you assume otherwise:
   `Status::internal("storage error")`, so misconfiguration needs `RUST_LOG=debug`.
 - **ABAC is not enforced.** `authz.v1` is generated, and `decide` / `verify_key` are implemented, but
   none of it is called. The only live authorization is owner-scoping. Only `audit_append` is wired.
-- **`Unseal` is a stub** that authenticates then always reports 100% unsealed. There is no seal state.
+- **Prose is not proof, and this repo's prose has lied.** `THREAT-MODEL.md` and `RUNBOOK.md` each
+  claimed seven controls no code provided, including a `v02-zero-knowledge-proof` gate that has never
+  existed in any commit. Both now carry `**Status:**` lines and `NOT IMPLEMENTED` headings; grep for
+  those before citing either doc as evidence, and when you add a claim, name the file that provides
+  it. Two live instances: `Unseal` authenticates then always reports 100% unsealed, so there is no
+  seal state, and no client can set `recovery_optin`, so D5 recovery is unreachable, not just
+  unwired.
 - **`VAULT42_PORT` and `VAULT42_CONTRACT_PORT` both default to 8443** — those two collide locally.
   `VAULT42_AUTHORITY_PORT` defaults to 8444 to stay clear of both.
-- **`fuzz/` does not exist** despite doc comments referencing cargo-fuzz targets.
 - **Scope keys are flag-gated off.** `keyset.rs`, `ops_scope`, `ops_env`, `ops_rotate` and the seven
   scope/env RPCs are on `develop` but return `UNIMPLEMENTED` unless `VAULT42_SCOPE_KEYS_ENABLED` is
   set. 42ctl's scope verbs need it on.
@@ -243,9 +248,11 @@ the target must be re-verified at that moment rather than from an earlier scan.
 ## Doc map
 
 `USERDOC.md` full user guide and the CLI reference · `DECISIONS.md` D0–D12 architecture record ·
-`THREAT-MODEL.md` adversaries and residual risks R1–R11 · `RUNBOOK.md` deploy, unseal, recovery,
-rotation, and what is shipped versus merely designed · `HUMAN-ATOMS.md` remaining human/account
-actions. `RUNBOOK.md` is the authority on which flag-gated features are actually live.
+`THREAT-MODEL.md` adversaries and residual risks R1–R18 · `RUNBOOK.md` deploy, rotation, and what is
+shipped versus merely designed · `HUMAN-ATOMS.md` remaining human/account actions. `RUNBOOK.md` is
+the intended authority on which flag-gated features are live, but it was the source of three false
+claims until 4ed2264, so trust a `NOT IMPLEMENTED` heading over its prose and trust this file's
+trip-wires over both. `fuzz/` still does not exist despite doc comments referencing cargo-fuzz.
 
 ## Sibling repo
 
