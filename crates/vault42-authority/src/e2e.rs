@@ -37,7 +37,7 @@ use vault42_contract::signing::now_unix;
 const PASSWORD: &str = "correct horse battery staple";
 
 /// Build an app over a fresh temporary database, optionally behind an invite token.
-fn fresh_app(tag: &str, register_token: Option<&str>) -> Arc<App> {
+pub(crate) fn fresh_app(tag: &str, register_token: Option<&str>) -> Arc<App> {
     let base = std::env::temp_dir().join(format!("v42-auth-{}-{tag}", std::process::id()));
     let db = format!("{}.db", base.display());
     let key = format!("{}.key", base.display());
@@ -54,7 +54,7 @@ fn fresh_app(tag: &str, register_token: Option<&str>) -> Arc<App> {
 }
 
 /// Drive one request through the real router and decode the response.
-async fn send(app: &Arc<App>, request: Request<Body>) -> (StatusCode, Value) {
+pub(crate) async fn send(app: &Arc<App>, request: Request<Body>) -> (StatusCode, Value) {
     let response = router(app.clone()).oneshot(request).await.expect("route");
     let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
@@ -67,7 +67,7 @@ async fn send(app: &Arc<App>, request: Request<Body>) -> (StatusCode, Value) {
 }
 
 /// A JSON POST with no credentials.
-fn post(path: &str, body: Value) -> Request<Body> {
+pub(crate) fn post(path: &str, body: Value) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri(path)
@@ -77,7 +77,7 @@ fn post(path: &str, body: Value) -> Request<Body> {
 }
 
 /// A JSON POST carrying a bearer token.
-fn post_as(path: &str, token: &str, body: Value) -> Request<Body> {
+pub(crate) fn post_as(path: &str, token: &str, body: Value) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri(path)
@@ -88,7 +88,7 @@ fn post_as(path: &str, token: &str, body: Value) -> Request<Body> {
 }
 
 /// A GET carrying a raw Authorization header value.
-fn get_with(path: &str, authorization: &str) -> Request<Body> {
+pub(crate) fn get_with(path: &str, authorization: &str) -> Request<Body> {
     Request::builder()
         .method("GET")
         .uri(path)
@@ -98,7 +98,7 @@ fn get_with(path: &str, authorization: &str) -> Request<Body> {
 }
 
 /// Register an account and return a live session token.
-async fn signed_up(app: &Arc<App>, email: &str) -> String {
+pub(crate) async fn signed_up(app: &Arc<App>, email: &str) -> String {
     let (status, _) = send(
         app,
         post(
@@ -124,7 +124,7 @@ async fn signed_up(app: &Arc<App>, email: &str) -> String {
 }
 
 /// A fresh, valid Ed25519 author public key in hex.
-fn author_pubkey() -> String {
+pub(crate) fn author_pubkey() -> String {
     hex::encode(
         vault42_core::Identity::generate()
             .author_public()

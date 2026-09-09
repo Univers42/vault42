@@ -27,7 +27,11 @@ mod config;
 mod contract;
 #[cfg(test)]
 mod e2e;
+#[cfg(test)]
+mod e2e_orgs;
 mod error;
+mod handlers;
+mod rbac;
 mod routes;
 mod store;
 mod validate;
