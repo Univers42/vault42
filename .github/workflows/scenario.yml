@@ -1,0 +1,72 @@
+name: scenario
+
+# Drives the deployed vault the way an operator does, using a real project: Univers42/Inception,
+# whose configuration lives in srcs/.env and whose six credentials are mounted by path out of
+# secrets/. It fills both, pushes, stops BOTH MACHINES COLD, pulls onto the wiped tree, and
+# requires every file back byte-identically with its mode intact.
+#
+# Stopping the machines mid-scenario is the point. Everything else here could be proved against
+# a local container; that the data outlives the machine that received it cannot, and it is the
+# assumption the whole scale-to-zero cost model rests on.
+#
+# NOT on every deploy, and not on a schedule yet. Two honest reasons. Each run registers a new
+# tenant on the production authority and leaves its blobs on a 1 GB volume — small, but it
+# accumulates, and nothing here deletes an account. And the run is only meaningful against a
+# 42ctl that has the secrets/ directory fix; until that lands on 42ctl's main branch, a
+# scheduled run would go red every week for a reason nobody needs to be told twice. Point
+# c42_ref at the branch that has it, or run it after the merge.
+
+on:
+  workflow_dispatch:
+    inputs:
+      c42_ref:
+        description: "42ctl ref to build the client from"
+        type: string
+        default: main
+
+concurrency:
+  group: fly-scenario
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  inception:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FT_REGISTER_TOKEN: ${{ secrets.VAULT42_REGISTER_TOKEN }}
+      AUTHORITY_URL: https://vault42-authority.fly.dev
+      SERVER_URL: https://vault42-server.fly.dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: check out the client
+        uses: actions/checkout@v4
+        with:
+          repository: Univers42/42ctl
+          ref: ${{ inputs.c42_ref }}
+          path: c42
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: c42
+
+      - name: build 42ctl
+        working-directory: c42
+        run: cargo build --quiet
+
+      # The scenario stops both machines itself, so it must be the only thing driving them.
+      - name: Inception, end to end, across a full stop
+        env:
+          C42: ${{ github.workspace }}/c42/target/debug/42ctl
+        run: sh scripts/smoke/inception-live.sh
+
+      # The scenario wakes the machines to pull. Leave them off, which is the state they are
+      # meant to sit in and the state the cost model assumes.
+      - name: leave the machines off
+        if: always()
+        run: sh scripts/ops/fly-machines.sh stop

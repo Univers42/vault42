@@ -149,6 +149,34 @@ To make the apps reachable **only** after pressing start, set `auto_start_machin
 `fly.toml` and `fly.authority.toml`. One line each. Everything else keeps working, but 42ctl
 will fail against a stopped app instead of waking it.
 
+### The real-project scenario
+
+`scripts/smoke/inception-live.sh` drives the deployed vault with an actual project —
+Univers42/Inception, whose configuration is `srcs/.env` and whose six credentials
+docker-compose mounts by path out of `secrets/`. It fills both, pushes, **stops both machines
+cold**, pulls onto the wiped tree, and requires every file back byte-identically with its mode
+intact.
+
+```sh
+export C42=../42ctl/target/debug/42ctl
+export FT_REGISTER_TOKEN=…            # the authority gates /v1/register
+export FLY_API_TOKEN="$(sed -n 's/^FLY_TOKEN=//p' ../.env)"
+sh scripts/smoke/inception-live.sh
+```
+
+Stopping the machines mid-scenario is the point. Everything else could be proved against a
+local container; that the data outlives the machine that received it cannot, and that is the
+assumption the scale-to-zero cost model rests on.
+
+The wipe is an assertion, not a step. If it silently failed, every byte comparison after it
+would pass against files that were never deleted, and the run would prove nothing while
+reporting that everything was restored.
+
+Run it from the Actions tab as the **scenario** workflow. It is deliberately not on a schedule:
+each run registers a tenant on the production authority and nothing here deletes an account, so
+the residue accumulates. It also needs a 42ctl carrying the `secrets/` directory fix — point
+`c42_ref` at a branch that has it.
+
 ### Live verification (round-trips the real deployment)
 
 ```sh
