@@ -7,10 +7,14 @@ How to operate, deploy, unseal, recover, and rotate.
 **Shipped & proven** (the deployed MVP, see DECISIONS **D9/D10**): the gRPC server
 (Ed25519-challenge auth, owner-scoped opaque-envelope SQLite store, local hash-chained
 audit, server-side authorship verification without decryption), the zero-knowledge CLI
-(`init/whoami/set/get/ls/rm/rotate/share/audit`), the russh SSH edge, and the live fly.io
-deployment. Proof: a 13-test in-process gRPC battery (`scripts/verify/v01-server-e2e.sh`, which asserts
-cargo's exit status rather than a test count) + a live round-trip against
-`https://vault42.fly.dev`.
+(`init/whoami/set/get/ls/rm/rotate/share/audit`), and the live fly.io deployment. Proof: a 13-test
+in-process gRPC battery (`scripts/verify/v01-server-e2e.sh`, which asserts cargo's exit status rather
+than a test count) + a live round-trip against `https://vault42.fly.dev`.
+
+`vault42-ssh` used to be in that list and is neither shipped nor proven. It has zero tests, no CI
+job, no Dockerfile and no fly config: `deploy/Dockerfile` builds `vault42-server` and
+`deploy/Dockerfile.contract` builds `vault42-contract`, and those are the only two images that
+exist. It is 279 lines of network-facing code that nothing builds, runs, or deploys.
 
 **Designed, not built**: the grobase substrate hop (`verify_key`/`decide`/`audit_append`),
 operator-assisted recovery (D5), L2 CMEK at-rest (D8), seal/unseal state, the
