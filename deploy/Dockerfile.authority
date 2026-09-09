@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.7
+# vault42-authority image — accounts, orgs, teams, RBAC, and contract issuance. This is the
+# standalone replacement for the grobase control plane, so it is the one binary that must be
+# deployable for 42ctl's org verbs to reach anything: without it the CLI's control-plane
+# endpoint has nowhere to point. Single binary on distroless; the SQLite database and the
+# contract signing key live on a mounted volume at /data. HTTP/JSON, TLS at the fly edge.
+#
+# The volume is load-bearing rather than a convenience. The authority refuses to start when it
+# finds a database beside a missing signing key, because that combination means contracts were
+# issued by a key that is gone and minting a replacement would silently reject every one of
+# them. A volume that fails to mount is exactly that state, so it stops instead of booting
+# into a vault nobody can open.
+FROM public.ecr.aws/docker/library/rust:1.96-slim-bookworm AS builder
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY . .
+RUN cargo build --release --bin vault42-authority \
+ && cp target/release/vault42-authority /vault42-authority
+
+FROM gcr.io/distroless/cc-debian12 AS runtime
+COPY --from=builder /vault42-authority /vault42-authority
+ENV VAULT42_AUTHORITY_HOST=0.0.0.0 \
+    VAULT42_AUTHORITY_PORT=8444 \
+    VAULT42_AUTHORITY_DB=/data/authority.db \
+    VAULT42_AUTHORITY_KEY=/data/authority.key \
+    MAIL_HOST=smtp.titan.email \
+    MAIL_PORT=465 \
+    RUST_LOG=info
+EXPOSE 8444
+ENTRYPOINT ["/vault42-authority"]

@@ -1,0 +1,53 @@
+# fly.io deployment for vault42-authority — the standalone control plane. HTTP/JSON, TLS at
+# the fly edge, scale-to-zero so it costs only its volume when idle, which is the whole reason
+# grobase was rejected: the Postgres-plus-Kong-plus-Go stack it replaces cannot run inside this
+# budget and would outweigh the vault it protects.
+#
+# A SEPARATE APP FROM grobase-nano ON PURPOSE. That app runs vault42-contract, a different
+# binary serving only /v1/register, and it holds a signing key on its own volume. Deploying the
+# authority over it would destroy that key and invalidate every contract already issued.
+#
+# TWO SECRETS ARE REQUIRED AND ARE NOT SET HERE, because a secret in a repository is a leaked
+# secret. Set them with `fly secrets set --app vault42-authority`:
+#   MAIL_PASSWORD  the Titan credential; second factors refuse to start without it
+#   MAIL_FROM      the sending address, which is also the SMTP username
+# Both already exist as GitHub Actions secrets on this repository.
+#
+# GITHUB_CLIENT_ID is optional. Unset, device-flow sign-in answers a named refusal rather than
+# 404, so the feature reports itself as unconfigured instead of looking broken.
+app = "vault42-authority"
+primary_region = "cdg"
+
+[build]
+  dockerfile = "deploy/Dockerfile.authority"
+
+[env]
+  VAULT42_AUTHORITY_HOST = "0.0.0.0"
+  VAULT42_AUTHORITY_PORT = "8444"
+  VAULT42_AUTHORITY_DB = "/data/authority.db"
+  VAULT42_AUTHORITY_KEY = "/data/authority.key"
+  MAIL_HOST = "smtp.titan.email"
+  MAIL_PORT = "465"
+  RUST_LOG = "info"
+
+[[mounts]]
+  source = "vault42_authority_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8444
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "get"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
