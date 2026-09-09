@@ -72,14 +72,42 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          # Two commits deep so the step below can see what this one changed. Shallower and
+          # `git diff HEAD~1` has nothing to compare against.
+          fetch-depth: 2
+
+      # A documentation commit rebuilds two Rust images from cold and wakes both machines to
+      # smoke-test a binary that did not change. That is roughly forty minutes of building to
+      # ship a paragraph. This decides whether anything IN THE IMAGE moved.
+      #
+      # It fails OPEN: a manual dispatch, or any state where the comparison cannot be made,
+      # deploys. Skipping a deploy that was needed is a silent stale production; building one
+      # that was not needed only costs time.
+      - name: decide whether the image can have changed
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || ! git rev-parse HEAD~1 >/dev/null 2>&1; then
+            echo "build=yes" >> "$GITHUB_OUTPUT"
+            echo "dispatch, or no parent to compare against: deploying"
+            exit 0
+          fi
+          changed="$(git diff --name-only HEAD~1 HEAD)"
+          printf 'changed:\n%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -qE '^(crates/|contracts/|deploy/|Cargo\.(toml|lock)$|fly\.toml$|fly\.authority\.toml$)'; then
+            echo "build=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=no" >> "$GITHUB_OUTPUT"
+            echo "nothing in either image changed; smoking the running deployment instead"
+          fi
 
       - name: record what is being deployed
         run: |
           printf 'commit: %s\n' "$(git rev-parse HEAD)"
           printf 'target: %s\n' "$TARGET"
+          printf 'build:  %s\n' "${{ steps.scope.outputs.build }}"
 
       - name: deploy vault42-authority
-        if: ${{ (inputs.target || 'both') != 'server' }}
+        if: ${{ steps.scope.outputs.build == 'yes' && (inputs.target || 'both') != 'server' }}
         run: |
           docker run --rm -e FLY_API_TOKEN \
             -v /var/run/docker.sock:/var/run/docker.sock \
@@ -93,7 +121,7 @@ jobs:
       # self-generated keypair with an unlimited quota. The server refuses to boot on an empty
       # value now; this refuses to write one in the first place.
       - name: sync the contract key onto the server
-        if: ${{ (inputs.target || 'both') != 'authority' }}
+        if: ${{ steps.scope.outputs.build == 'yes' && (inputs.target || 'both') != 'authority' }}
         run: |
           key="$(curl -fsS --retry 6 --retry-all-errors --retry-delay 5 --max-time 30 \
                    "$AUTHORITY_URL/v1/contract-key" | sed 's/.*"public_key":"//;s/".*//')"
@@ -108,7 +136,7 @@ jobs:
             "$FLYCTL" secrets import --stage --app vault42-server
 
       - name: deploy vault42-server
-        if: ${{ (inputs.target || 'both') != 'authority' }}
+        if: ${{ steps.scope.outputs.build == 'yes' && (inputs.target || 'both') != 'authority' }}
         run: |
           docker run --rm -e FLY_API_TOKEN \
             -v /var/run/docker.sock:/var/run/docker.sock \
