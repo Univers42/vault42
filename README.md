@@ -24,12 +24,12 @@ Full user guide (install, the CLI, registration, sharing, self-hosting, troubles
 
 | Service | URL | Role |
 |---|---|---|
-| vault42 (data plane) | `https://vault42.fly.dev` | stores your encrypted secrets |
-| grobase-nano (authority) | `https://grobase-nano.fly.dev` | registration / signed contracts |
+| vault42 (data plane) | `https://vault42-server.fly.dev` | stores your encrypted secrets |
+| vault42-authority | `https://vault42-authority.fly.dev` | registration / signed contracts |
 | Sign-up portal | `https://site-one-vert-34.vercel.app` | builds your `register` command |
 
 ```sh
-export VAULT42_SERVER=https://vault42.fly.dev VAULT42_AUTHORITY=https://grobase-nano.fly.dev
+export VAULT42_SERVER=https://vault42-server.fly.dev VAULT42_AUTHORITY=https://vault42-authority.fly.dev
 vault42 init                                          # local identity (keys never leave your machine)
 vault42 register --tenant alice --token <INVITE>      # one-time, sends only your public key
 printf 'sk-live-…' | vault42 set prod/stripe          # sealed locally, stored opaque

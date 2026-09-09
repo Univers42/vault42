@@ -44,3 +44,12 @@ An assertion driven through a route may be satisfied by something other than the
 test. When a rule has no reachable route that isolates it, reach past the routes: `Store::call` is
 `pub(crate)`, so a test can strip one row and assert the rule directly. `e2e_offboard.rs`'s
 `a_grant_never_authorizes_a_non_member` is the pattern.
+
+**A gate is hermetic; a probe of deployed infrastructure is not a gate.** `scripts/smoke/post-deploy.sh`
+lives outside `scripts/verify/` on purpose. The battery must stay free to run and offline-reproducible,
+and every run of that script wakes a scale-to-zero fly machine, so putting it under the `v*-*.sh` glob
+would bill the operator for each `git push` and would turn a flaky network into a red battery — which
+is not a statement about the code. It runs from the deploy workflow, after a release, when the machines
+are awake anyway. It carries the same discipline: it was proved to fail by pointing it at the wrong
+host and at a host that speaks HTTP where gRPC is expected, and its exit status was read directly,
+because piping it into `tail` replaces the script's status with the pipe's.

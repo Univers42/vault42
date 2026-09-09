@@ -9,7 +9,7 @@ How to operate, deploy, unseal, recover, and rotate.
 audit, server-side authorship verification without decryption), the zero-knowledge CLI
 (`init/whoami/set/get/ls/rm/rotate/share/audit`), and the live fly.io deployment. Proof: a 13-test
 in-process gRPC battery (`scripts/verify/v01-server-e2e.sh`, which asserts cargo's exit status rather
-than a test count) + a live round-trip against `https://vault42.fly.dev`.
+than a test count) + a live round-trip against `https://vault42-server.fly.dev`.
 
 `vault42-ssh` used to be in that list and is neither shipped nor proven. It has zero tests, no CI
 job, no Dockerfile and no fly config: `deploy/Dockerfile` builds `vault42-server` and
@@ -28,15 +28,19 @@ behaviour and a marked one as a specification you cannot run.
 
 Two scale-to-zero fly apps in `cdg` (D11), ~$0.30/mo total (volumes only):
 
-- **`grobase-nano`** → `https://grobase-nano.fly.dev` — the contract authority. People
+- **`vault42-authority`** → `https://vault42-authority.fly.dev` — the contract authority. People
   self-register and get a signed contract; it idles after.
-- **`vault42`** → `https://vault42.fly.dev` — the zero-knowledge data plane, gated on a
-  valid contract (`VAULT42_CONTRACT_PUBKEY` = the authority's public key).
+- **`vault42-server`** → `https://vault42-server.fly.dev` — the zero-knowledge data plane, gated
+  on a valid contract (`VAULT42_CONTRACT_PUBKEY` = the authority's public key).
+
+The app is `vault42-server`, not `vault42`. Fly app names are unique across all of fly.io and
+`vault42` is held by someone else, so the short name was never ours to deploy to. Anything
+still pointing at `vault42.fly.dev` is pointing at a stranger's machine.
 
 End-to-end, a new user does:
 
 ```sh
-export VAULT42_SERVER=https://vault42.fly.dev VAULT42_AUTHORITY=https://grobase-nano.fly.dev
+export VAULT42_SERVER=https://vault42-server.fly.dev VAULT42_AUTHORITY=https://vault42-authority.fly.dev
 vault42 init                                   # local identity (Ed25519 + X25519)
 vault42 register --authority $VAULT42_AUTHORITY --tenant alice   # → saves a contract
 printf my-secret | vault42 set prod/db         # sealed locally, stored opaque, contract-gated
@@ -46,36 +50,109 @@ vault42 get prod/db                            # decrypted locally
 To wire the gate after deploying the authority: fetch its key and stage it on vault42.
 
 ```sh
-KEY=$(curl -fsS https://grobase-nano.fly.dev/v1/contract-key | sed 's/.*"public_key":"//;s/".*//')
+KEY=$(curl -fsS https://vault42-authority.fly.dev/v1/contract-key | sed 's/.*"public_key":"//;s/".*//')
 $FLY secrets set VAULT42_CONTRACT_PUBKEY="$KEY" --stage -a vault42 && $FLY deploy -a vault42
 ```
 
 ## Deploy (fly.io)
 
-The deployed app is **`vault42`** → `https://vault42.fly.dev` (region `cdg`; Madrid is not
-offered to this account — D10). TLS terminates at the fly edge and the proxy speaks h2c to
-the tonic server (`[http_service.http_options] h2_backend = true` — required for gRPC).
-Deploy the authority with `-c fly.contract.toml`. Drive fly with the prebuilt image and the
-`FLY_TOKEN` (never printed/committed):
+Deploys are automated. A push to `develop` runs `vault42-ci`; when that goes green the
+`deploy` workflow builds both images, releases them, smoke-tests the result, and stops the
+machines again. Nothing below needs running by hand in the normal case — it is here for the
+first deploy on a new account and for the day the automation is what's broken.
+
+flyctl is not installed on the host, so it runs from its own image. The token is read from
+`../.env` and never printed:
 
 ```sh
-TOK=$(grep '^FLY_TOKEN=' ../../.env.local | cut -d= -f2- | tr -d '"')
-FLY="docker run --rm -e FLY_API_TOKEN=$TOK -v $PWD:/work -w /work flyio/flyctl:latest"
-$FLY apps create vault42 --org personal                 # once
-$FLY volumes create vault42_data --app vault42 --region cdg --size 1 --yes  # encrypted, once
-$FLY deploy --remote-only --ha=false --yes              # build on fly's remote builder + release
-$FLY status --app vault42 ; $FLY logs --app vault42
+export FLY_API_TOKEN="$(sed -n 's/^FLY_TOKEN=//p' ../.env)"
+FLY="docker run --rm -e FLY_API_TOKEN flyio/flyctl:v0.4.101"
 ```
 
-`fly.toml` (repo root) is the source of truth: 256 MB shared-cpu VM, encrypted volume at
-`/data`, env `VAULT42_{HOST,PORT,DB,AUTH_SKEW_SECS}`. To wire a private grobase later:
-`$FLY secrets set GROBASE_URL=... INTERNAL_SERVICE_TOKEN=...` (then the audit/authz seam
-activates; no redeploy of code needed).
+Creating the two apps and their volumes, once per account:
+
+```sh
+$FLY apps create vault42-authority --org personal
+$FLY apps create vault42-server    --org personal
+$FLY volumes create vault42_authority_data --app vault42-authority --region cdg --size 1 --yes
+$FLY volumes create vault42_data           --app vault42-server    --region cdg --size 1 --yes
+```
+
+The authority needs its secrets staged before the first release, because it refuses to start
+when second factors are enabled and the mail credential to deliver them is missing:
+
+```sh
+$FLY secrets import --stage --app vault42-authority <<'EOF'
+MAIL_FROM=…
+MAIL_PASSWORD=…
+VAULT42_OTP_PROOF_SECRET=…
+VAULT42_REGISTER_TOKEN=…
+EOF
+```
+
+**Deploy the authority first.** The server's `VAULT42_CONTRACT_PUBKEY` is the authority's
+public key, so releasing the server first pins it to a key that does not exist yet, and every
+request is then rejected by a server that looks perfectly healthy.
+
+```sh
+BUILD="-v /var/run/docker.sock:/var/run/docker.sock -v $PWD:/work -w /work"
+docker run --rm -e FLY_API_TOKEN $BUILD flyio/flyctl:v0.4.101 \
+  deploy --config fly.authority.toml --app vault42-authority --local-only --ha=false --yes
+```
+
+`--local-only` builds on this machine and pushes the image. The alternative, `--remote-only`,
+builds on a fly remote builder, which is itself a billed machine. `--ha=false` creates one
+machine; fly's default is two, which doubles the compute bill for an app serving one operator.
+
+Then wire the gate. Check the key before storing it — this recipe used to pipe `curl` straight
+into `fly secrets set`, so an authority that was briefly unreachable wrote an empty secret, and
+an empty key used to mean "standalone", which accepts any self-generated keypair:
+
+```sh
+KEY=$(curl -fsS https://vault42-authority.fly.dev/v1/contract-key | sed 's/.*"public_key":"//;s/".*//')
+[ "${#KEY}" -eq 64 ] || { echo "refusing a ${#KEY}-char key"; exit 1; }
+printf 'VAULT42_CONTRACT_PUBKEY=%s\n' "$KEY" | $FLY secrets import --stage --app vault42-server
+docker run --rm -e FLY_API_TOKEN $BUILD flyio/flyctl:v0.4.101 \
+  deploy --config fly.toml --app vault42-server --local-only --ha=false --yes
+```
+
+Finally, prove the deployment rather than assuming it:
+
+```sh
+sh scripts/smoke/post-deploy.sh
+```
+
+## Cost, and turning the machines off
+
+The standing bill is two 1 GB encrypted volumes and nothing else. Both apps set
+`auto_stop_machines = "stop"` with `min_machines_running = 0`, so an idle machine stops and
+bills no compute; a request wakes it in about a second and a half. Measured cold, from both
+machines stopped to a green smoke run: 3.5s.
+
+Neither app has a dedicated IPv4 (that is a paid add-on); both use fly's shared v4 and a free
+dedicated v6.
+
+To take control of the switch by hand, from the Actions tab run the **machines** workflow and
+pick `status`, `stop`, or `start`. The same thing locally:
+
+```sh
+sh scripts/ops/fly-machines.sh status
+sh scripts/ops/fly-machines.sh stop            # both apps
+sh scripts/ops/fly-machines.sh start vault42-authority
+```
+
+Stopping is safe for the data. A clean shutdown checkpoints the SQLite write-ahead log into
+the database, and the volume keeps both; the signing key is on the same volume and is
+verified stable across a full stop/start.
+
+To make the apps reachable **only** after pressing start, set `auto_start_machines = false` in
+`fly.toml` and `fly.authority.toml`. One line each. Everything else keeps working, but 42ctl
+will fail against a stopped app instead of waking it.
 
 ### Live verification (round-trips the real deployment)
 
 ```sh
-docker run --rm -e VAULT42_SERVER=https://vault42.fly.dev -e VAULT42_KEYSTORE=/tmp/ks.v42 \
+docker run --rm -e VAULT42_SERVER=https://vault42-server.fly.dev -e VAULT42_KEYSTORE=/tmp/ks.v42 \
   -e VAULT42_PASSPHRASE=… -v $PWD:/work -w /work <toolchain> sh -c '
     cargo build -q -p vault42-cli && B=target/debug/vault42
     $B init && printf my-secret | $B set app/key && [ "$($B get app/key)" = my-secret ] && echo OK'

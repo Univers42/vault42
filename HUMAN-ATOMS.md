@@ -8,8 +8,8 @@ artifact; these require a person. Legend: 🔵 web/account · ⚪ command a huma
 |---|---|---|---|
 | 1 | fly.io account + org + billing | 🔵 💰 | ✅ deployed to the `personal` org |
 | 2 | Region + app allocation | 🔵 ⚪ | ✅ app `vault42` in `cdg` (Madrid not offered — D10); single public app, no separate private-grobase app (D9) |
-| 3 | Domain + DNS for the public endpoint | 🔵 💰 ⚪ | 🟡 using `vault42.fly.dev` (fly-managed); a custom domain is optional |
-| 4 | TLS certificate → TLS 1.3 | 🔵 ⚪ | ✅ fly edge cert on `vault42.fly.dev` (auto LE); BYO only if a custom domain is added |
+| 3 | Domain + DNS for the public endpoint | 🔵 💰 ⚪ | 🟡 using `vault42-server.fly.dev` (fly-managed); a custom domain is optional |
+| 4 | TLS certificate → TLS 1.3 | 🔵 ⚪ | ✅ fly edge cert on `vault42-server.fly.dev` (auto LE); BYO only if a custom domain is added |
 | 5 | `fly secrets` (`INTERNAL_SERVICE_TOKEN`, `KEY_HASH_PEPPER`, unseal/recovery seeds) | ⚪ 📌 | ⬜ NOT required for the standalone MVP (Ed25519 client auth + own SQLite, D9); needed only to wire grobase/recovery |
 | 6 | HashiCorp Vault Transit / KMS for KEK + recovery escrow | 🔵 ⚪ 💰 | ⬜ for L2 CMEK (D8) + recovery (D5) — not in the shipped MVP |
 | 7 | WireGuard peer for operator → private grobase | ⚪ | ⬜ only when a private grobase is stood up |

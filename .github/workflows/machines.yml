@@ -1,0 +1,57 @@
+name: machines
+
+# The manual switch. Both apps stop themselves when idle and wake on a request, so the
+# standing cost is two 1 GB volumes; this is for when the operator wants the decision to be
+# theirs rather than the proxy's — holding the control plane off entirely, or shutting it
+# down immediately after a deploy instead of paying out the idle timeout.
+#
+# Run it from the Actions tab: "machines" -> "Run workflow" -> pick an action and an app.
+#
+# `start` is rarely needed. auto_start_machines is on, so any request wakes the app in a
+# second or two; the reason to press it is to warm a machine before a demo. To make the apps
+# reachable ONLY after pressing it, set auto_start_machines = false in fly.toml and
+# fly.authority.toml — one line each, and everything else here keeps working.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "what to do"
+        type: choice
+        options: [status, stop, start]
+        default: status
+      app:
+        description: "which app"
+        type: choice
+        options: [both, vault42-authority, vault42-server]
+        default: both
+
+# Never let a stop and a start run at once: the loser would leave the machine in whichever
+# state it happened to finish in, which is the one thing a manual switch must not do.
+concurrency:
+  group: fly-machines
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  machines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: ${{ inputs.action }} ${{ inputs.app }}
+        run: |
+          if [ "${{ inputs.app }}" = "both" ]; then
+            sh scripts/ops/fly-machines.sh "${{ inputs.action }}"
+          else
+            sh scripts/ops/fly-machines.sh "${{ inputs.action }}" "${{ inputs.app }}"
+          fi
+      # Whatever the action was, end by showing where things actually stand. A stop that
+      # silently did nothing and a stop that worked look identical without this.
+      - name: state afterwards
+        if: always()
+        run: sh scripts/ops/fly-machines.sh status

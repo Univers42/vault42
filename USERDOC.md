@@ -52,8 +52,8 @@ takes a second or two to wake):
 
 | Service | URL | Role |
 |---|---|---|
-| vault42 (data plane) | `https://vault42.fly.dev` | stores your encrypted secrets |
-| grobase-nano (authority) | `https://grobase-nano.fly.dev` | registration / contracts |
+| vault42 (data plane) | `https://vault42-server.fly.dev` | stores your encrypted secrets |
+| vault42-authority | `https://vault42-authority.fly.dev` | registration / contracts |
 | Sign-up portal | `https://site-one-vert-34.vercel.app` | builds your `register` command |
 
 Registration on the hosted instance requires an **invite token** (it is a private "you + friends"
@@ -100,8 +100,8 @@ Confirm it runs: `vault42 --help`.
 
 ```sh
 # Point the CLI at the hosted duo (or your own — see §9)
-export VAULT42_SERVER=https://vault42.fly.dev
-export VAULT42_AUTHORITY=https://grobase-nano.fly.dev
+export VAULT42_SERVER=https://vault42-server.fly.dev
+export VAULT42_AUTHORITY=https://vault42-authority.fly.dev
 
 # 1. Create your local identity (prompts for a passphrase, no echo)
 vault42 init
@@ -296,7 +296,7 @@ $FLY secrets set VAULT42_REGISTER_TOKEN="$(openssl rand -hex 16)" --stage -a gro
 $FLY deploy --remote-only --ha=false --yes -c fly.contract.toml
 
 # 2. Wire the authority's public key into vault42, then deploy vault42
-KEY=$(curl -fsS https://grobase-nano.fly.dev/v1/contract-key | sed 's/.*"public_key":"//;s/".*//')
+KEY=$(curl -fsS https://vault42-authority.fly.dev/v1/contract-key | sed 's/.*"public_key":"//;s/".*//')
 $FLY apps create vault42 --org personal
 $FLY volumes create vault42_data --app vault42 --region cdg --size 1 --yes
 $FLY secrets set VAULT42_CONTRACT_PUBKEY="$KEY" --stage -a vault42
@@ -313,7 +313,7 @@ app — fly.toml sets `[http_service.http_options] h2_backend = true`.
 By default the server keeps the opaque-envelope store in a local SQLite file (`VAULT42_DB`). For
 production it can instead **delegate storage to a grobase backend** — so grobase owns the Postgres
 database (ACID, WAL, backups) and vault42 is the zero-knowledge *motor* on top. This is how the live
-`vault42.fly.dev` runs. The server auto-selects GrobaseStore when `VAULT42_STORE != sqlite` and all of
+`vault42-server.fly.dev` runs. The server auto-selects GrobaseStore when `VAULT42_STORE != sqlite` and all of
 these are set (else it falls back to SQLite):
 
 | Var | Meaning |

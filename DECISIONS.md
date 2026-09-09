@@ -98,7 +98,7 @@ The deployed server (P5) refines D3/D4 to match shippable reality:
 
 fly.io does not offer Madrid (`mad`) to this account; `cdg` (Paris) is the nearest EU
 region it provides and matches the org's existing apps. Deployed app: `vault42` →
-`https://vault42.fly.dev` (TLS at the fly edge, plaintext h2c to the app), 12 MB
+`https://vault42-server.fly.dev` (TLS at the fly edge, plaintext h2c to the app), 12 MB
 distroless image, encrypted 1 GB volume `vault42_data` at `/data`.
 
 ## D11 — Managed multi-tenancy via a nano contract authority (the deployed duo)

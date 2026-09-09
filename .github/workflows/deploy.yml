@@ -1,0 +1,126 @@
+name: deploy
+
+# Deploys both fly.io apps, but only behind a green vault42-ci on the same commit. The gate
+# battery is the repo's only end-to-end coverage, so a deploy that did not wait for it would
+# put an unverified binary in front of the vault.
+#
+# COST. Both apps scale to zero, so the standing bill is two 1 GB volumes and nothing else.
+# A deploy costs the runner's build time (free on a public repo) plus the seconds each machine
+# is awake for the smoke test. Builds run on the GitHub runner with --local-only rather than a
+# fly remote builder, because a remote builder is itself a billed fly machine. --ha=false
+# creates ONE machine per app; fly's default is two, which would double the compute bill for
+# an app that serves one operator.
+#
+# ORDER IS LOAD-BEARING. The authority is deployed first because the server's
+# VAULT42_CONTRACT_PUBKEY is the authority's public key: deploying the server first would pin
+# it to a key the authority has not yet minted, and every request would be rejected by a
+# server that looks perfectly healthy.
+
+on:
+  workflow_run:
+    workflows: ["vault42-ci"]
+    types: [completed]
+    branches: [develop]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "which app to deploy"
+        type: choice
+        options: [both, authority, server]
+        default: both
+
+# Two deploys racing would interleave `secrets import` with `deploy` and could pin the server
+# to a key from a different run. Never cancel in flight: a half-finished deploy is worse than
+# a queued one.
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Pinned rather than :latest — this container is handed a token that can create and destroy
+  # every machine in the org. sha256:39a83e2c4129b896df502d72027dde6e436b5cf8f74b994b144857e0e22c0d7b
+  FLYCTL: flyio/flyctl:v0.4.101
+  AUTHORITY_URL: https://vault42-authority.fly.dev
+  SERVER_URL: https://vault42-server.fly.dev
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # workflow_run fires on failure too, so without the conclusion check a red CI would still
+    # deploy. The other two conditions close the pwn-request hole: `branches: [develop]` filters
+    # on the HEAD branch name, which a fork can choose, so a pull request from a fork branch
+    # named `develop` would otherwise reach this job and its fly deploy token.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      TARGET: ${{ inputs.target || 'both' }}
+    steps:
+      # The commit CI actually verified, not whatever develop points at now. They differ
+      # whenever a second push lands while the first is still building.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      - name: record what is being deployed
+        run: |
+          printf 'commit: %s\n' "$(git rev-parse HEAD)"
+          printf 'target: %s\n' "$TARGET"
+
+      - name: deploy vault42-authority
+        if: ${{ (inputs.target || 'both') != 'server' }}
+        run: |
+          docker run --rm -e FLY_API_TOKEN \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/work -w /work "$FLYCTL" \
+            deploy --config fly.authority.toml --app vault42-authority \
+                   --local-only --ha=false --yes
+
+      # Fetched from the live authority and CHECKED before it is stored. The runbook used to
+      # pipe curl straight into `fly secrets set`, so an authority that was briefly unreachable
+      # wrote an empty secret — and an empty key used to mean "standalone", which accepts any
+      # self-generated keypair with an unlimited quota. The server refuses to boot on an empty
+      # value now; this refuses to write one in the first place.
+      - name: sync the contract key onto the server
+        if: ${{ (inputs.target || 'both') != 'authority' }}
+        run: |
+          key="$(curl -fsS --retry 6 --retry-all-errors --retry-delay 5 --max-time 30 \
+                   "$AUTHORITY_URL/v1/contract-key" | sed 's/.*"public_key":"//;s/".*//')"
+          if [ "${#key}" -ne 64 ]; then
+            printf 'refusing: the authority returned a %s-char key, not 64\n' "${#key}"
+            exit 1
+          fi
+          case "$key" in
+            *[!0-9a-f]*) printf 'refusing: the key is not lowercase hex\n'; exit 1 ;;
+          esac
+          printf 'VAULT42_CONTRACT_PUBKEY=%s\n' "$key" | docker run --rm -i -e FLY_API_TOKEN \
+            "$FLYCTL" secrets import --stage --app vault42-server
+
+      - name: deploy vault42-server
+        if: ${{ (inputs.target || 'both') != 'authority' }}
+        run: |
+          docker run --rm -e FLY_API_TOKEN \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD":/work -w /work "$FLYCTL" \
+            deploy --config fly.toml --app vault42-server \
+                   --local-only --ha=false --yes
+
+      # The deploy is not finished until the deployed thing answers. This is the only check in
+      # the repo that can see a volume that failed to mount, a secret that never reached the VM,
+      # or a fly proxy that stopped speaking h2c to tonic.
+      - name: smoke the live deployment
+        run: sh scripts/smoke/post-deploy.sh
+
+      # Machines wake to serve the smoke test. auto_stop returns them on its own, but only after
+      # an idle timeout that bills for minutes nobody used. Stopping them here makes the deploy
+      # leave the apps in the state they are meant to sit in: off, costing only their volumes.
+      - name: stop the machines again
+        if: always()
+        run: sh scripts/ops/fly-machines.sh stop

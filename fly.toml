@@ -5,7 +5,7 @@
 # This file is at the repo root so the Docker build context is the workspace root.
 # primary_region: Madrid (mad) is not offered to this account; cdg (Paris) is the
 # nearest EU region fly provides here and matches the org's other apps.
-app = "vault42"
+app = "vault42-server"
 primary_region = "cdg"
 
 [build]
