@@ -8,14 +8,17 @@ How to operate, deploy, unseal, recover, and rotate.
 (Ed25519-challenge auth, owner-scoped opaque-envelope SQLite store, local hash-chained
 audit, server-side authorship verification without decryption), the zero-knowledge CLI
 (`init/whoami/set/get/ls/rm/rotate/share/audit`), the russh SSH edge, and the live fly.io
-deployment. Proof: 6-test in-process gRPC battery (`scripts/verify/v01-server-e2e.sh`) +
-a live round-trip against `https://vault42.fly.dev`.
+deployment. Proof: a 13-test in-process gRPC battery (`scripts/verify/v01-server-e2e.sh`, which asserts
+cargo's exit status rather than a test count) + a live round-trip against
+`https://vault42.fly.dev`.
 
-**Designed, flag-gated, not yet wired into the deployed server**: the grobase substrate
-hop (`verify_key`/`decide`/`audit_append` — set `GROBASE_URL`+`INTERNAL_SERVICE_TOKEN`),
-operator-assisted recovery (D5), L2 CMEK at-rest (D8), and `recover`/`rotate-keys`
-ceremonies. The sections below marked *(designed)* describe the target, not current
-behaviour.
+**Designed, not built**: the grobase substrate hop (`verify_key`/`decide`/`audit_append`),
+operator-assisted recovery (D5), L2 CMEK at-rest (D8), seal/unseal state, the
+`recover`/`rotate-keys` ceremonies, and audit-chain verification. Every section describing
+one now carries **NOT IMPLEMENTED** in its own heading, because the *(designed)* marker this
+paragraph used to point at was never actually applied to any of them — so those sections read
+as live procedure for as long as this file has existed. Treat an unmarked heading as current
+behaviour and a marked one as a specification you cannot run.
 
 ## The deployed duo (managed multi-tenancy, ~free)
 
@@ -94,16 +97,34 @@ make verify        # the v01..vNN gate battery
 - `hotfix/x.y.z` off `main` → `main` + `develop`.
 - **No co-author trailer** on any commit. Pushes/tags/deploys are operator-triggered (irreversible).
 
-## Seal / unseal (L2 at-rest, P7/P9)
+## Seal / unseal (L2 at-rest, P7/P9) — NOT IMPLEMENTED
 
-vault42 boots **SEALED**: it can store/return ciphertext but cannot run unwrap-assisting operations.
-The L2 master seed lives in a fly secret (`VAULT42_UNSEAL_SEED`) and auto-unseals at boot. Manual or
-Shamir K-of-N unseal is the documented upgrade. To re-seal: restart the process / rotate the seed.
+**There is no seal state.** `VAULT42_UNSEAL_SEED` appears in no `.rs` file in the workspace, and the
+`Unseal` RPC authenticates the caller and then unconditionally answers `Unsealed`, progress 100
+(`vault42-server/src/grpc.rs:190-204`). Nothing is ever sealed, so nothing can be re-sealed by
+restarting, and that RPC reports a constant rather than a reading. Never cite it as evidence.
 
-## Recovery — "I lost my passphrase but can log into fly.io" (D5)
+L1 zero-knowledge does not depend on this — the server holds no recipient private key either way — so
+what is actually missing is the ability to take the crypto plane offline during an incident.
 
-Pre-req: the tenant had `recovery_optin = true` when the secrets were written (recovery is **not**
-retroactive). Steps:
+The design below is the P7/P9 intent, kept as the spec, and is **not** current behaviour: vault42
+would boot SEALED, able to store and return ciphertext but unable to run unwrap-assisting operations;
+the L2 master seed would live in a fly secret and auto-unseal at boot; manual or Shamir K-of-N unseal
+is the documented upgrade, and re-sealing would be a restart or a seed rotation.
+
+## Recovery — "I lost my passphrase but can log into fly.io" (D5) — NOT IMPLEMENTED
+
+**There is no recovery verb, and no production envelope carries a recovery wrap.** `vault42 recover`
+does not exist in `vault42-cli`, and every production compose site in both clients passes
+`recovery: None` (`42ctl/src/adapters/compose.rs:53,104,140,150`; `vault42-cli/src/compose.rs:50,72`),
+so no shipped write has ever attached a recovery `WrappedDek`. The `Recovery` recipient kind is
+implemented in `vault42-core` and covered by the conformance battery, but nothing reaches it. Today a
+lost passphrase means the data is gone — say so to anyone who asks, rather than promising this
+ceremony.
+
+The steps below are the D5 spec for when that changes, not a procedure you can run. Pre-req would be
+that the tenant had `recovery_optin = true` when the secrets were written (recovery is **not**
+retroactive):
 
 1. Operator proves fly.io account access (the boot-injected Transit token is present in the running
    server).
@@ -120,10 +141,16 @@ retroactive). Steps:
   deploy the new token to both vault42 and grobase, then clear `_PREV` after the skew window.
 - **Secret DEK** (`vault42 rotate <path>`): fresh DEK, re-encrypt, re-wrap for the current recipient
   set, bump `rev`.
-- **Identity** (`vault42 rotate-keys`): new keypair, re-wrap all the user's secrets, retire the old.
+- **Identity**: **not implemented.** There is no `rotate-keys` verb in either client, and
+  `keys init --force` mints an unrelated identity that re-wraps nothing. See THREAT-MODEL R18.
 - **Transit KEK / recovery key**: see fly + Vault Transit; crypto-shred is irreversible — confirm.
 
-## Verify the audit chain
+## Verify the audit chain — NOT IMPLEMENTED
 
-`vault42 audit --verify` (or grobase `GET /v1/audit/tenants/{id}/verify`) recomputes the hash chain
-and reports the first broken link. Run after any suspected tampering and as a periodic integrity job.
+**No client verifies the chain.** `audit` takes only `--since` (`42ctl/src/cli.rs:234`); there is no
+`--verify` flag, and both audit clients discard `prev_hash` before printing, so the link a verifier
+would need never reaches the operator at all. The chain is written correctly server-side
+(`vault42-server/src/audit_store.rs:104-151`) — it is simply never checked.
+
+Until a verifying client exists, treat the audit log as a convenience record and not as
+tamper-evidence, and do not offer chain verification as a control. See THREAT-MODEL R3.

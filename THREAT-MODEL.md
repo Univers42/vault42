@@ -17,17 +17,29 @@ can read another's data.
 | Compromised `grobase` / DB exfil | steals the datastore | only ciphertext + wrapped DEKs + at-rest-encrypted metadata leak |
 | Malicious tenant ("friend") | valid account, tries cross-tenant / priv-esc | hard tenant isolation; IDOR impossible; RBAC denies |
 | Brute-forcer | offline guesses on passphrases | Argon2id memory-hardness + online lockout |
-| Stolen client device | has the encrypted keystore | locked behind Argon2id passphrase; revocable via key rotation |
+| Stolen client device | has the encrypted keystore | locked behind Argon2id passphrase only — **no revocation exists** (R18) |
 
 ## Residual risks (honest — each has a mitigation or is an accepted non-goal)
 
 - **R1 Recovery breaks pure ZK for opted-in tenants** (D5). fly account + Transit ⇒ plaintext.
   Mitigate: per-tenant opt-in (OFF for friends), every recovery audited, Shamir upgrade path.
+  **Status:** this risk cannot currently materialise, which is worth stating because the rest of this
+  entry reads as if it can. No shipped client can opt in: `recovery_optin` is hardcoded `false` at
+  every production compose site (`42ctl/src/adapters/compose.rs:33,96,132`,
+  `vault42-cli/src/compose.rs:32`) and every one passes `recovery: None`, so no envelope in existence
+  carries a recovery wrap. D5 is unreachable rather than merely unwired (see RUNBOOK).
 - **R2 Metadata is not encrypted** — counts, sharing graph, blob sizes, timing are visible to the
   server. v1 accepted; `content_type` is an opaque label, never a key name. v2 may encrypt names.
 - **R3 Server is trusted for availability/ordering** — it can DoS or serve a stale rev, but cannot
-  read. Mitigate: `rev` in the AAD + expected-prev-rev optimistic concurrency + audit-chain omission
-  detection; the client treats a missing/old rev as an error, not silent success.
+  read. Mitigate: `rev` in the AAD + expected-prev-rev optimistic concurrency, enforced server-side
+  (`ops_env.rs:109`) and regression-tested (`stale_expected_prev_rev_is_rejected`); the client treats
+  a missing/old rev as an error, not silent success. **Status:** audit-chain omission detection is
+  **not implemented**. The chain is written correctly — each append re-reads the head and links
+  `prev_hash`→`hash` under a single connection (`vault42-server/src/audit_store.rs:104-151`) — but
+  nothing verifies it. Both audit clients print `seq`, `ts`, `action`, `target` and a hash prefix,
+  discarding `prev_hash` before display (`42ctl/src/ops/audit.rs:27-33`,
+  `vault42-cli/src/verbs_audit.rs:27-33`), so a server that drops or rewrites an event is caught by
+  nothing that ships. A verifying client is the fix and it is not written.
 - **R4 CMEK crypto-shred footgun** — revoking a Transit KEK makes data permanently undecryptable.
   Mitigate: separate recovery vs row-CMEK keys; admin+passkey-fenced; KEK lifecycle runbook.
 - **R5 Recipient removal is forward-secure only** — a removed party keeps anything already read and
@@ -41,9 +53,15 @@ can read another's data.
 - **R8 Hand-rolled wire format** (the cost of rejecting age, D6). Mitigate: the canonical AAD is
   FROZEN + injective (it binds metadata, the recipient set, AND each recipient's `kind`); the bincode
   codec is fixed-int + size-bounded (64 MiB) + reject-trailing, so `from_bytes` on untrusted bytes is
-  decode-safe and DoS-bounded; `wrapped` is stored sorted for a canonical per-envelope encoding; a
-  `version` field gates migrations. **Status:** unit tests pin roundtrip/tamper/injectivity/dedup; a
-  `cargo-fuzz` target over the decoder and golden vectors are a P2 follow-up (not yet committed).
+  decode-safe and DoS-bounded; `wrapped` is stored sorted for a canonical per-envelope encoding; and
+  `Metadata.version` is bound into the AAD (`aad.rs:42`), so an envelope's format era cannot be
+  altered without breaking the author signature. **Status:** that version field does **not** gate
+  migrations. Nothing dispatches on it, every producer hardcodes `version: 2`, and `open` never reads
+  it (`open.rs:77-91`); the only version branch in the tree is `contract.rs:79`, which rejects rather
+  than migrates. Cross-era confusion is prevented by the AAD domain tag (`vault42/aad/v2`), not by
+  the field — which is sound, but it is a different mechanism than the one claimed, and it offers no
+  migration path. Unit tests pin roundtrip/tamper/injectivity/dedup; a `cargo-fuzz` target over the
+  decoder and golden vectors remain a P2 follow-up (no `fuzz/` directory exists yet).
 - **R9 Author-pubkey trust (TOFU)** — `open` pins the author key the caller passes and `verify_strict`
   proves authorship against *that* key, but the *expected* key still comes from the (untrusted) server
   on first fetch. This is trust-on-first-use: a server that lies about the owner key on the initial
@@ -60,8 +78,10 @@ can read another's data.
   re-key, and a `rotate` re-attaches the current recovery key. `recovery_optin=false` is now enforced
   on read (`open` rejects a Recovery wrap when opt-in is off), so "not retroactive" is crypto-checked —
   but key rotation/forward-secrecy is **future work**: per-epoch recovery keys (epoch in metadata) +
-  the Shamir K-of-N split bound the blast radius. Until then, the operator's own (default-ON) tenant is
-  explicitly **operator-escrowed, not zero-knowledge** (DECISIONS.md D5).
+  the Shamir K-of-N split bound the blast radius. The operator's own tenant is *intended* to be
+  explicitly **operator-escrowed, not zero-knowledge** (DECISIONS.md D5) — but it is not: no client can
+  turn opt-in on, so that tenant is zero-knowledge in fact, and its data is unrecoverable on a lost
+  passphrase like everyone else's (R1). Do not describe it as escrowed until a client can opt in.
 
 ### Org/team/group RBAC + per-environment scope keys (R12–R17)
 
@@ -94,15 +114,39 @@ Proof: grobase gates m162/m166/m168/m170/m172, vault42 gates v14/v15, live `scri
   per-tenant opt-in as secrets (R1/R11), and audited; a scope key never silently inherits recovery
   escrow.
 
+### Identity lifecycle (R18)
+
+- **R18 A stolen device cannot be revoked** — the keystore on a lost laptop is protected by the
+  Argon2id passphrase and by nothing else, because there is no identity-key rotation in either client.
+  The `keys` surface is `init`/`export-pub`/`enroll`/`escrow`/`recover` (`42ctl/src/cli.rs:174-201`),
+  and every `rotate` verb in the tree rotates a secret's DEK (`vault42 rotate <path>`) or a scope key
+  (`42ctl vault rotate-scope`) — never an identity keypair. `keys init --force` mints an *unrelated*
+  identity and re-wraps nothing, so it abandons every personal secret rather than rotating into them.
+  The consequence is that a compromised passphrase is a permanent compromise of everything that
+  identity can reach. Mitigate today: remove the member from the org and `rotate-scope` every
+  environment they held — which protects shared environment secrets and does nothing for their
+  personal ones. **Status:** a real `keys rotate` (new keypair, re-wrap every reachable secret, retire
+  the old fingerprint) is **not implemented**, and is the highest-value gap in this section.
+
 ## Accepted non-goals (documented, not solved)
 
-- A compromised client **with unlocked keys** can read that user's own secrets (mitigate: hardware
-  keys + rotation).
+- A compromised client **with unlocked keys** can read that user's own secrets. Hardware keys and
+  identity rotation are the intended mitigations; neither is built (R18).
 - We are not building an HSM.
-- A malicious operator who holds the unseal key is the trust root (that is the point of D5 recovery).
+- A malicious operator would be the trust root for any escrowed tenant, which is the point of D5
+  recovery. Today no tenant is escrowed (R1) and there is no unseal key to hold, since seal state is
+  unimplemented (see RUNBOOK). This non-goal describes the intended posture, not the current one.
 
 ## Validation
 
-OWASP ASVS + Top 10 as the rubric. Every finding → a failing regression test → fix → green. The ZK
-invariant is proven by gate `v02-zero-knowledge-proof` (inspect row + logs + server memory for a
-sentinel plaintext) and the `vault42-conformance` proptest/fuzz battery.
+OWASP ASVS + Top 10 as the rubric. Every finding → a failing regression test → fix → green.
+
+The ZK invariant is exercised by the `vault42-conformance` proptest battery
+(`crates/vault42-conformance/tests/`: roundtrip, tamper→auth-failure, non-recipient-cannot-unwrap,
+signature-forgery-rejected, and the recovery-opt-in gate). **Status:** gate
+`v02-zero-knowledge-proof` — the end-to-end check that no sentinel plaintext appears in a stored row,
+a log line, or server memory — **does not exist**. `git log --all --diff-filter=A` finds it in no
+commit on any branch, and no script in `scripts/verify/` bears that name. The property most central
+to this document is therefore argued from unit-level crypto tests rather than from an end-to-end
+observation of a running server. Writing v02 is the largest verification gap in the repo. The
+`cargo-fuzz` half of the conformance battery does not exist either (no `fuzz/` directory).
