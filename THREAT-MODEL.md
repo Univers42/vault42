@@ -120,6 +120,37 @@ on the new-epoch revision is covered there and not by a vault42 gate.
   per-tenant opt-in as secrets (R1/R11), and audited; a scope key never silently inherits recovery
   escrow.
 
+### Chunk deduplication (R19)
+
+- **R19 Deterministic chunk sealing tells the store which chunks are equal** — `seal_chunk`
+  (`crates/vault42-core/src/chunk.rs`) deliberately abandons the random nonce that every other
+  seal in the crate uses. Identical plaintext under one environment's scope secret produces
+  byte-identical ciphertext, which is the only way two members of that environment can share one
+  stored object instead of paying for two. The cost is that whoever runs the store learns the
+  equality relation over chunks: how much its tenants share, which members hold the same bytes,
+  and how many distinct chunks an environment really has behind a deduplicated count.
+  **Scope of the leak:** bounded to one environment on purpose. Every key descends from that
+  environment's scope secret via HKDF, so the same bytes in two environments seal to two
+  unrelated names and equality does not cross the boundary. This is what the per-environment key
+  scope buys, and `identical_bytes_in_two_scopes_do_not_converge` pins it.
+  **Status:** accepted, and chosen over per-tenant scope with the cost stated.
+
+- **R19a A departed member keeps a confirmation oracle** — convergent encryption gives anyone
+  holding the scope secret the ability to test whether a plaintext they can guess is present:
+  seal the guess, look for the name. Removing a member from the environment does not take the
+  secret out of their hands, so until that environment is rotated they can confirm the presence
+  of any file they can reconstruct. The random-nonce path never offered this, so chunk dedup adds
+  it. **Mitigation:** `rotate-scope` after any removal, which the offboarding path already says is
+  required (`v26`). **Status:** the rotation exists; nothing forces it, so this is live whenever an
+  operator skips it.
+
+- **R19b A hostile member can poison a shared chunk** — if a name did not have to be the digest
+  of the bytes stored under it, a member of the environment could store chosen bytes under the
+  name another member's deduplicated fetch will ask for. The AAD binding cannot catch this,
+  because the writer binds the same lie into it. `open_chunk` therefore recomputes the name from
+  the recovered plaintext and refuses a mismatch. **Status:** mitigated, and held in place by
+  `a_chunk_stored_under_a_lying_name_is_refused`, which was watched failing with the check removed.
+
 ### Identity lifecycle (R18)
 
 - **R18 A stolen device cannot be revoked** — the keystore on a lost laptop is protected by the
