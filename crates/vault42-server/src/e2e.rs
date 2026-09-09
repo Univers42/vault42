@@ -204,14 +204,46 @@ async fn push_get_roundtrip_is_byte_identical() {
     assert_eq!(&opened[..], secret);
 }
 
+/// The sentinel never appears in what the server hands back, and the search really searched.
+///
+/// The absence assertion is the point, and an absence assertion proves nothing on its own: this one
+/// passed for its whole life against locally sealed bytes, and would have passed identically against
+/// an empty buffer, because `contains` on an empty haystack is false. So the bytes now come back from
+/// a real Push and Get rather than from `seal_for` directly, and a positive control asserts the owner
+/// fingerprint IS present — metadata is deliberately not encrypted (THREAT-MODEL R2), so finding it
+/// proves the haystack is the stored envelope and that the needle search works at all.
 #[tokio::test]
 async fn envelope_on_the_wire_has_no_plaintext() {
+    let addr = spawn(fresh_store("zk")).await;
+    let mut c = client(addr);
     let id = Identity::generate();
     let owner = principal_of(&id);
     let secret = b"TOP-SECRET-SENTINEL-XYZZY";
-    let envelope = seal_for(&id, &owner, "p", 1, secret);
+    let push = signed(
+        PushRequest {
+            path: "p".into(),
+            envelope: seal_for(&id, &owner, "p", 1, secret),
+            expected_prev_rev: 0,
+        },
+        &id,
+        "/vault.v1.Vault/Push",
+    );
+    c.push(push).await.expect("push");
+    let get = signed(
+        GetRequest {
+            path: "p".into(),
+            version: 0,
+        },
+        &id,
+        "/vault.v1.Vault/Get",
+    );
+    let stored = c.get(get).await.expect("get").into_inner().envelope;
     assert!(
-        !contains(&envelope, secret),
+        contains(&stored, owner.as_bytes()),
+        "positive control: the owner fingerprint must be findable, or this test proves nothing"
+    );
+    assert!(
+        !contains(&stored, secret),
         "sentinel plaintext must never appear in the opaque envelope"
     );
 }
