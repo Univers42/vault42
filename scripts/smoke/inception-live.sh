@@ -21,6 +21,13 @@
 # the network. It also WRITES to production, creating one tenant per run, so it is invoked
 # deliberately rather than swept up by a glob.
 #
+# IT CANNOT CLEAN UP AFTER ITSELF, and that is a property of the authority rather than an
+# oversight here. Nothing releases a tenant name: the claim is keyed on the name and holds the
+# claiming author's fingerprint, re-registration succeeds only for that same fingerprint, and
+# even deleting the account leaves the row behind (THREAT-MODEL R20). Reusing one fixed name
+# across runs would need a committed keystore, which is worse than a row. So each run leaves a
+# few hundred bytes on a 1 GB volume, permanently.
+#
 # What it proves that a local run cannot: that the project survives the scale-to-zero cycle the
 # whole cost model rests on. It stops both machines cold between the push and the pull, so a
 # green here means the data outlived the machine that received it.

@@ -120,6 +120,40 @@ on the new-epoch revision is covered there and not by a vault42 gate.
   per-tenant opt-in as secrets (R1/R11), and audited; a scope key never silently inherits recovery
   escrow.
 
+### Tenant claims (R20)
+
+- **R20 Nothing ever releases a tenant name** — `/v1/register` calls `claim_tenant`, which inserts
+  a row keyed on the name and holding the claiming author's fingerprint
+  (`crates/vault42-authority/src/store/tenants.rs:29`). There is no delete, release or unclaim
+  anywhere in the store. A re-registration succeeds only when it presents the SAME fingerprint,
+  so a name whose keystore is lost is permanently unusable by anybody, including the person who
+  registered it, with no operator recourse. This is R18 seen from the other side: losing the
+  passphrase loses the identity, and the name goes with it.
+  **Status:** live. The mitigation is to pick a new name.
+
+- **R20a Deleting an account orphans its tenant claims rather than releasing them** — the schema
+  declares `account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL`
+  (`store/migrate.rs:48`), and `erase_account` touches grants, invites, memberships and the
+  account tombstone but never the `tenants` table (`store/offboard.rs:124`). So
+  `42ctl account delete --yes` reports success and leaves the name claimed by a fingerprint that
+  may no longer belong to a living account. Signing up again with a new keystore and trying to
+  reclaim your own tenant answers 409 Conflict, and nothing in that answer explains why.
+  **Status:** live, and it is the deletion path's most surprising residue.
+
+  Releasing the claim would be safe with respect to DATA, which is worth recording because it is
+  the first thing to worry about: the server derives an owner id from the author key's
+  fingerprint and not from the tenant (`vault42-server/src/principal.rs:29`), so a new holder of
+  a released name reads a different namespace and inherits nothing. What release would create is
+  two parties who each believe they hold one name, both with contracts that verify. Which of
+  those costs is worse is a product decision, so nothing here changes the semantics.
+
+- **R20b Automated runs burn a name each** — `scripts/smoke/inception-live.sh` registers a fresh
+  tenant per run because reusing one would need a committed keystore, and the claim is idempotent
+  only for the same fingerprint. Each run therefore leaves one permanent row. It is a few hundred
+  bytes on a 1 GB volume and the namespace is 64 arbitrary characters wide, so the practical cost
+  is nil; it is recorded because "the test cannot clean up after itself" should be a known
+  property rather than a discovery.
+
 ### Chunk deduplication (R19)
 
 - **R19 Deterministic chunk sealing tells the store which chunks are equal** — `seal_chunk`
