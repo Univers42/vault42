@@ -15,7 +15,7 @@
 //! Built once in `main` and threaded through axum's `State`, so nothing here is a global
 //! and a test can construct its own `App` over a temporary database.
 
-use crate::config::{MailConfig, OtpConfig};
+use crate::config::{GithubConfig, MailConfig, OtpConfig};
 use crate::store::Store;
 use vault42_contract::authority::Authority;
 
@@ -27,6 +27,7 @@ pub struct App {
     pub register_token: Option<String>,
     pub otp: OtpConfig,
     pub mail: MailConfig,
+    pub github: GithubConfig,
 }
 
 impl App {

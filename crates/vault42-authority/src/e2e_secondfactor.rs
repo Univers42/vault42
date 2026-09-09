@@ -75,7 +75,7 @@ fn code_in(message: &str) -> String {
 /// off the request path: reading "the newest file" right after a second request returns the
 /// previous code, and the previous code is already dead because a new request replaces it. Any
 /// harness reading the outbox needs this, so it is worth stating rather than discovering.
-async fn code_for(app: &Arc<crate::app::App>, tag: &str, email: &str) -> String {
+pub(crate) async fn code_for(app: &Arc<crate::app::App>, tag: &str, email: &str) -> String {
     let already = delivered(tag, email).len();
     let (status, _) = send(app, post("/v1/auth/otp/request", json!({"email": email}))).await;
     assert_eq!(
@@ -94,7 +94,7 @@ async fn code_for(app: &Arc<crate::app::App>, tag: &str, email: &str) -> String 
 }
 
 /// Exchange a code for a proof.
-async fn proof_for(app: &Arc<crate::app::App>, email: &str, code: &str) -> String {
+pub(crate) async fn proof_for(app: &Arc<crate::app::App>, email: &str, code: &str) -> String {
     let (status, body) = send(
         app,
         post("/v1/auth/otp/verify", json!({"email": email, "code": code})),
@@ -591,6 +591,11 @@ async fn an_unconfigured_authority_refuses_to_issue_codes() {
             proof_secret: None,
             ttl_secs: 300,
             proof_ttl_secs: 600,
+        },
+        github: crate::config::GithubConfig {
+            client_id: None,
+            oauth_base: "http://127.0.0.1:1".into(),
+            api_base: "http://127.0.0.1:1".into(),
         },
         mail: crate::config::MailConfig {
             transport: crate::config::MailTransport::File(dir.display().to_string()),

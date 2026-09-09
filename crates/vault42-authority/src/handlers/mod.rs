@@ -13,6 +13,7 @@
 //! Route handlers for the organization model.
 
 pub mod environments;
+pub mod github;
 pub mod grants;
 pub mod groups;
 pub mod invites;

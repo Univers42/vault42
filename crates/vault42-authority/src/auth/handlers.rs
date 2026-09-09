@@ -59,9 +59,9 @@ pub struct AccountResp {
 /// A minted session.
 #[derive(Serialize)]
 pub struct LoginResp {
-    token: String,
-    account_id: String,
-    expires_at: i64,
+    pub token: String,
+    pub account_id: String,
+    pub expires_at: i64,
 }
 
 /// The caller's own account.

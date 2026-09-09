@@ -72,6 +72,11 @@ pub(crate) fn fresh_app(tag: &str, register_token: Option<&str>) -> Arc<App> {
             ttl_secs: 300,
             proof_ttl_secs: 600,
         },
+        github: crate::config::GithubConfig {
+            client_id: None,
+            oauth_base: "http://127.0.0.1:1".into(),
+            api_base: "http://127.0.0.1:1".into(),
+        },
         mail: crate::config::MailConfig {
             transport: crate::config::MailTransport::File(outbox.display().to_string()),
             from: "devfast@archicode.codes".into(),

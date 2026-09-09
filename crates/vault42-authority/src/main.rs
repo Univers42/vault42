@@ -28,6 +28,8 @@ mod contract;
 #[cfg(test)]
 mod e2e;
 #[cfg(test)]
+mod e2e_github;
+#[cfg(test)]
 mod e2e_offboard;
 #[cfg(test)]
 mod e2e_orgs;
@@ -106,6 +108,7 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
         register_token: cfg.register_token,
         otp: cfg.otp,
         mail: cfg.mail,
+        github: cfg.github,
     });
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     axum::serve(listener, routes::router(app)).await?;

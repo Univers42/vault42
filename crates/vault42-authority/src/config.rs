@@ -29,6 +29,19 @@ pub struct Config {
     pub register_token: Option<String>,
     pub otp: OtpConfig,
     pub mail: MailConfig,
+    pub github: GithubConfig,
+}
+
+/// GitHub device-flow settings.
+///
+/// The two base URLs are configurable for the same reason the mail transport is: a battery has to
+/// be able to attack this route without github.com, and an external service's answer feeding
+/// session minting is exactly the path worth attacking. They default to the real hosts, so an
+/// unset variable can never point sign-in somewhere unexpected.
+pub struct GithubConfig {
+    pub client_id: Option<String>,
+    pub oauth_base: String,
+    pub api_base: String,
 }
 
 /// One-time-code settings.
@@ -89,6 +102,13 @@ impl Config {
                 proof_secret: otp_proof_secret(),
                 ttl_secs: parse_or("VAULT42_OTP_TTL_SECS", 300),
                 proof_ttl_secs: parse_or("VAULT42_OTP_PROOF_TTL_SECS", 600),
+            },
+            github: GithubConfig {
+                client_id: std::env::var("GITHUB_CLIENT_ID")
+                    .ok()
+                    .filter(|v| !v.is_empty()),
+                oauth_base: env("GITHUB_OAUTH_BASE", "https://github.com"),
+                api_base: env("GITHUB_API_BASE", "https://api.github.com"),
             },
             mail: MailConfig {
                 transport: mail_transport(),
@@ -193,6 +213,11 @@ mod tests {
                 host: "smtp.titan.email".into(),
                 port: 465,
                 password: password.map(str::to_string),
+            },
+            github: GithubConfig {
+                client_id: None,
+                oauth_base: "https://github.com".into(),
+                api_base: "https://api.github.com".into(),
             },
         }
     }

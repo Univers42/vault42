@@ -23,8 +23,8 @@ use crate::app::App;
 use crate::auth::handlers as auth;
 use crate::contract;
 use crate::handlers::{
-    environments, grants, groups, invites, offboard, orgs, projects, pubkeys, secondfactor, teams,
-    variables,
+    environments, github, grants, groups, invites, offboard, orgs, projects, pubkeys, secondfactor,
+    teams, variables,
 };
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -62,6 +62,8 @@ fn auth_routes() -> Router<Arc<App>> {
         )
         .route("/v1/auth/escrow/fetch", post(secondfactor::escrow_fetch))
         .route("/v1/auth/mfa", post(secondfactor::set_mfa))
+        .route("/v1/github/device/start", post(github::start))
+        .route("/v1/github/device/poll", post(github::poll))
 }
 
 /// Organization and team routes.

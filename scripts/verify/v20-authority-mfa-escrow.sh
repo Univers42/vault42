@@ -22,6 +22,13 @@
 # forged proof is refused, a proof minted for another address is refused, and turning the factor
 # back off needs a fresh proof so a stolen session cannot strip it.
 #
+# The GitHub device flow is attacked with a stub standing in for github.com, because an external
+# service's answer feeding session minting is where a forgotten check lives. The stub is hostile on
+# purpose: it approves a sign-in for an address the signer never proved they own, for an address
+# with no account here, and for an account that requires a second factor. GitHub refuses none of
+# those, so the authority must refuse all three. An unconfigured deployment says so rather than
+# 404, and the GitHub token is never handed to the client.
+#
 # The mail seam is asserted too, because it is what makes any of this testable: the file transport
 # renders the same message SMTP would send, the code is in the body and never in the subject, and
 # an address cannot steer the written path. An authority with second factors on and no usable
@@ -45,7 +52,7 @@ run_battery() {
 		-v vault42-cargo-git:/usr/local/cargo/git \
 		-v vault42-target:/work/target \
 		"$IMAGE" sh -c "cargo test -p vault42-authority --locked -- \
-			e2e_secondfactor:: otp:: mail:: config::; \
+			e2e_secondfactor:: e2e_github:: otp:: mail:: config:: handlers::github::; \
 			status=\$?; chown -R $(id -u):$(id -g) /work; exit \$status"
 }
 
