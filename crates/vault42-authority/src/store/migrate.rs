@@ -225,12 +225,39 @@ CREATE TABLE IF NOT EXISTS variables (
 CREATE INDEX IF NOT EXISTS variables_scope ON variables(scope_kind, scope_id);
 ";
 
+/// P4.5: a scope-key wrap belongs to ONE environment at ONE epoch.
+///
+/// The original table keyed wraps by `(grant_id, account_id)` alone, which made `missing`
+/// answer the wrong question in two ways. A project-wide grant covers every environment, so
+/// wrapping a member for `prod` dropped them from `missing` for `staging` and they were never
+/// provisioned there. And an epoch-blind row still claimed a wrap existed after a rotation had
+/// moved the scope to a new epoch, so rotation re-wrapped to nobody and the environment was
+/// stranded with no repair path.
+///
+/// Existing rows carry neither an environment nor an epoch, so there is nothing to migrate
+/// them to. Dropping them is safe and self-healing: a wrap row only records that a member has
+/// already been handed the key, so losing it reports the member as missing and the next
+/// reconcile re-wraps them. Bookkeeping is rebuilt; access is never lost.
+const M5: &str = "
+DROP TABLE IF EXISTS grant_wraps;
+CREATE TABLE grant_wraps (
+  grant_id   TEXT    NOT NULL REFERENCES grants(id) ON DELETE CASCADE,
+  account_id TEXT    NOT NULL,
+  env_id     TEXT    NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+  epoch      INTEGER NOT NULL CHECK (epoch >= 1),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (grant_id, account_id, env_id, epoch)
+);
+CREATE INDEX IF NOT EXISTS grant_wraps_scope ON grant_wraps(env_id, epoch);
+";
+
 /// The ordered migration ledger: `(version, name, sql)`.
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "accounts_sessions_tenants", M1),
     (2, "orgs_teams_invites", M2),
     (3, "projects_envs_groups_pubkeys_grants", M3),
     (4, "variables", M4),
+    (5, "grant_wraps_per_env_epoch", M5),
 ];
 
 /// Apply every migration not yet recorded, in version order.

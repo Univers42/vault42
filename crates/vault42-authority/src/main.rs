@@ -33,6 +33,8 @@ mod e2e_orgs;
 mod e2e_scope;
 #[cfg(test)]
 mod e2e_vars;
+#[cfg(test)]
+mod e2e_wraps;
 mod error;
 mod handlers;
 mod pop;

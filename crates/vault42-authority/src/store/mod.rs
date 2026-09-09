@@ -34,7 +34,7 @@ mod tenants;
 mod variables;
 
 pub use environments::{Environment, NewEnvironment};
-pub use grants::NewGrant;
+pub use grants::{NewGrant, WrapScope};
 pub use groups::NewGroup;
 pub use invites::{Acceptance, NewInvite};
 pub use orgs::NewOrg;

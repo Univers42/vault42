@@ -15,17 +15,23 @@
 //! A grant with `env_id` null is project-wide and applies to every environment in the
 //! project. The client already depends on that, so it is contract rather than convenience.
 //!
-//! `missing` is the client's provisioning loop and doubles as the authorized-member set for
-//! rotation, so exactness matters in both directions: a name absent from it silently loses
-//! access, and a name that should not be there silently keeps it.
+//! A wrap is always addressed by `(env_id, epoch)`, which both wrap routes require. Those
+//! coordinates are not decoration: a project-wide grant covers several environments and every
+//! rotation replaces the key, so a wrap recorded without them answers `missing` for scopes the
+//! member cannot actually read.
+//!
+//! `fulfilled` returns two distinct sets and callers must not confuse them. `missing` is the
+//! provisioning worklist, which empties as members are provisioned. `members` is everyone the
+//! grant authorizes, which is what rotation needs — re-wrapping from `missing` re-wraps to
+//! nobody once provisioning has converged.
 
 use super::org_project;
 use crate::app::App;
 use crate::auth::Principal;
 use crate::error::{Error, Result};
 use crate::rbac::ProjectRole;
-use crate::store::NewGrant;
-use axum::extract::{Path, State};
+use crate::store::{NewGrant, WrapScope};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -41,10 +47,20 @@ pub struct GrantReq {
     env_id: Option<String>,
 }
 
-/// Add-wrap body.
+/// Add-wrap body. The environment and epoch identify which scope key was wrapped.
 #[derive(Deserialize)]
 pub struct WrapReq {
     user_id: String,
+    env_id: String,
+    epoch: i64,
+}
+
+/// Which environment and epoch a fulfilment question is about. Required: defaulting either
+/// one would silently answer about a different scope than the caller is provisioning.
+#[derive(Deserialize)]
+pub struct ScopeQuery {
+    env_id: String,
+    epoch: i64,
 }
 
 /// A created grant.
@@ -60,9 +76,11 @@ pub struct ProjectGrantResp {
     env_id: Option<String>,
 }
 
-/// Which authorized members still need a scope-key wrap.
+/// Everyone the grant authorizes (`members`), and which of them still need a scope-key wrap
+/// for the queried environment and epoch (`missing`).
 #[derive(Serialize)]
 pub struct FulfilledResp {
+    members: Vec<String>,
     missing: Vec<String>,
 }
 
@@ -114,16 +132,20 @@ pub async fn list(
     ))
 }
 
-/// Report which authorized members still lack a scope-key wrap.
+/// Report everyone the grant authorizes, and which of them lack a wrap for `(env_id, epoch)`.
 pub async fn fulfilled(
     State(app): State<Arc<App>>,
     caller: Principal,
     Path((org, project, grant)): Path<(String, String, String)>,
+    Query(scope): Query<ScopeQuery>,
 ) -> Result<Json<FulfilledResp>> {
     let (project_id, _, _) = org_project(&app, (org, project), &caller).await?;
     require_grant_in_project(&app, &grant, &project_id).await?;
-    let missing = app.store.grant_missing_wraps(grant).await?;
-    Ok(Json(FulfilledResp { missing }))
+    let found = app.store.grant_fulfilment(grant, scope.into()).await?;
+    Ok(Json(FulfilledResp {
+        members: found.members,
+        missing: found.missing,
+    }))
 }
 
 /// Record that a scope-key wrap now exists for a member. Administrators only.
@@ -136,7 +158,11 @@ pub async fn add_wrap(
     let (project_id, _, role) = org_project(&app, (org, project), &caller).await?;
     role.require_admin()?;
     require_grant_in_project(&app, &grant, &project_id).await?;
-    app.store.add_grant_wrap(grant, body.user_id).await?;
+    let scope = WrapScope {
+        env_id: body.env_id,
+        epoch: body.epoch,
+    };
+    app.store.add_grant_wrap(grant, body.user_id, scope).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -151,4 +177,13 @@ async fn require_grant_in_project(app: &App, grant_id: &str, project_id: &str) -
         return Err(Error::NotFound);
     }
     Ok(())
+}
+
+impl From<ScopeQuery> for WrapScope {
+    fn from(query: ScopeQuery) -> Self {
+        WrapScope {
+            env_id: query.env_id,
+            epoch: query.epoch,
+        }
+    }
 }

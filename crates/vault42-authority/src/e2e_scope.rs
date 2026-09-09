@@ -44,7 +44,7 @@ fn put_as(path: &str, token: &str, body: Value) -> Request<Body> {
 }
 
 /// Sign up, found an org, and return `(token, org_slug, org_id, account_id)`.
-async fn founder(
+pub(crate) async fn founder(
     app: &Arc<crate::app::App>,
     email: &str,
     slug: &str,
@@ -79,13 +79,38 @@ fn pubkey_body(identity: &Identity, account_id: &str, signed_org: &str) -> Value
 }
 
 /// Create a project in `org` and return its id.
-async fn project(app: &Arc<crate::app::App>, token: &str, org: &str, slug: &str) -> String {
+pub(crate) async fn project(
+    app: &Arc<crate::app::App>,
+    token: &str,
+    org: &str,
+    slug: &str,
+) -> String {
     let (status, body) = send(
         app,
         post_as(
             &format!("/v1/orgs/{org}/projects"),
             token,
             json!({"slug": slug, "name": "Proj"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["id"].as_str().unwrap().to_string()
+}
+
+/// Create an environment under `proj` and return its id.
+pub(crate) async fn environment(
+    app: &Arc<crate::app::App>,
+    token: &str,
+    proj: &str,
+    name: &str,
+) -> String {
+    let (status, body) = send(
+        app,
+        post_as(
+            &format!("/v1/projects/{proj}/environments"),
+            token,
+            json!({"name": name}),
         ),
     )
     .await;
@@ -424,7 +449,8 @@ async fn missing_is_the_authorized_set_that_still_lacks_a_wrap() {
     assert_eq!(status, StatusCode::CREATED, "{grant}");
     let grant_id = grant["id"].as_str().unwrap().to_string();
 
-    let fulfilled = format!("{grants}/{grant_id}/fulfilled");
+    let env = environment(&app, &owner, &proj, "prod").await;
+    let fulfilled = format!("{grants}/{grant_id}/fulfilled?env_id={env}&epoch=1");
     let (status, body) = send(&app, get_with(&fulfilled, &format!("Bearer {owner}"))).await;
     assert_eq!(status, StatusCode::OK);
     let missing: Vec<&str> = body["missing"]
@@ -437,7 +463,8 @@ async fn missing_is_the_authorized_set_that_still_lacks_a_wrap() {
     assert!(missing.contains(&owner_id.as_str()) && missing.contains(&bob_id.as_str()));
 
     let wraps = format!("{grants}/{grant_id}/wraps");
-    let (status, body) = send(&app, post_as(&wraps, &owner, json!({"user_id": bob_id}))).await;
+    let wrap_bob = json!({"user_id": bob_id, "env_id": env, "epoch": 1});
+    let (status, body) = send(&app, post_as(&wraps, &owner, wrap_bob)).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     let (_, body) = send(&app, get_with(&fulfilled, &format!("Bearer {owner}"))).await;
     assert_eq!(
@@ -446,12 +473,20 @@ async fn missing_is_the_authorized_set_that_still_lacks_a_wrap() {
         "the wrapped member drops out"
     );
     assert_eq!(body["missing"][0], owner_id);
+    let members: Vec<&str> = body["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        members.len(),
+        2,
+        "members stays the full authorized set as missing empties: {body}"
+    );
 
-    let (status, body) = send(
-        &app,
-        post_as(&wraps, &owner, json!({"user_id": "stranger"})),
-    )
-    .await;
+    let stranger = json!({"user_id": "stranger", "env_id": env, "epoch": 1});
+    let (status, body) = send(&app, post_as(&wraps, &owner, stranger)).await;
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,

@@ -17,16 +17,22 @@
 //! pinned to the rotation's new epoch, so a genuinely-signed old-epoch grant cannot be
 //! smuggled into the new member set. A removed member simply has no new-epoch wrap, so it
 //! can no longer reach the rotated secret — forward secrecy by absence, never by deletion.
+//!
+//! Absence is also why the caller's OWN wrap is a precondition rather than a courtesy: the
+//! new scope key exists only in the rotating client's memory, so a rotation that omits the
+//! caller leaves nobody able to open the secrets it just re-sealed.
 
 use crate::principal::Principal;
 use crate::svc::VaultSvc;
 use tonic::Status;
-use vault42_proto::vault::v1::{RotateScopeRequest, RotateScopeResponse};
+use vault42_proto::vault::v1::{RotateScopeRequest, RotateScopeResponse, WrapScopeKeyRequest};
 
 impl VaultSvc {
-    /// Persist the new-epoch member wraps of a scope rotation. Verifies and stores each
-    /// rewrap (granter-signed, scope/epoch-bound, pinned to `new_epoch`); any malformed,
-    /// forged, mislabeled, or wrong-epoch rewrap fails the whole rotation before audit.
+    /// Persist the new-epoch member wraps of a scope rotation. Refuses outright a rotation
+    /// carrying no wrap for the caller, which would strand the scope. Then verifies and
+    /// stores each rewrap (granter-signed, scope/epoch-bound, pinned to `new_epoch`); a
+    /// malformed, forged, mislabeled, or wrong-epoch rewrap aborts the rotation before the
+    /// audit event, leaving any rewrap already accepted in place for a reconcile to finish.
     /// Emits a single `scope_rotate` audit event keyed to `scope@new_epoch`.
     pub(crate) async fn op_rotate_scope(
         &self,
@@ -38,6 +44,7 @@ impl VaultSvc {
             new_epoch,
             rewraps,
         } = req;
+        require_caller_rewrap(caller, &rewraps)?;
         let mut rewrapped = 0u32;
         for rewrap in rewraps {
             self.store_one_rewrap(rewrap, Some(new_epoch)).await?;
@@ -47,6 +54,29 @@ impl VaultSvc {
             .await;
         Ok(RotateScopeResponse { rewrapped })
     }
+}
+
+/// Refuse a rotation that does not re-wrap the new scope key to the rotating caller.
+///
+/// The new scope secret lives only in the rotating client's memory: it is generated there,
+/// used to re-seal every secret, and gone when the process exits. A rotation carrying no
+/// wrap for the caller therefore destroys the only copy of the key its own re-sealed
+/// secrets now need, and because an epoch never regresses there is no way back. Requiring
+/// the caller's own wrap costs nothing in privilege — re-sealing already obliges the caller
+/// to decrypt every secret in the scope — and it is what keeps a rotation repairable.
+///
+/// Checked before the first rewrap is persisted, so a refused rotation stores nothing.
+fn require_caller_rewrap(
+    caller: &Principal,
+    rewraps: &[WrapScopeKeyRequest],
+) -> Result<(), Status> {
+    if rewraps.iter().any(|r| r.member_id == caller.id) {
+        return Ok(());
+    }
+    Err(Status::invalid_argument(
+        "rotation must re-wrap the new scope key to the rotating caller, \
+         otherwise the new key is unrecoverable and the scope is stranded",
+    ))
 }
 
 #[cfg(test)]
@@ -253,17 +283,21 @@ mod tests {
         let new_plaintext = b"v2-secret-rotated";
         let env2 = seal_to_scope(&k2, &author, 2, new_plaintext);
         let keep_pub = keep.encryption_public();
+        let admin_pub = granter.encryption_public();
         let req = RotateScopeRequest {
             scope_id: hex::encode(scope),
             new_epoch: 2,
-            rewraps: vec![wrap_req(&keep_p, &keep_pub, &granter, &s2, scope, 2)],
+            rewraps: vec![
+                wrap_req(&keep_p, &keep_pub, &granter, &s2, scope, 2),
+                wrap_req(&admin, &admin_pub, &granter, &s2, scope, 2),
+            ],
         };
         assert_eq!(
             svc.op_rotate_scope(&admin, req)
                 .await
                 .expect("rotate")
                 .rewrapped,
-            1
+            2
         );
 
         let opened = decrypt_via_scope(&svc, &(keep_p, keep), &granter, &author, scope, 2, &env2)
@@ -302,21 +336,66 @@ mod tests {
         let scope = [6u8; 16];
         let (_k2, s2) = generate_keyset(scope, 2);
         let keep_pub = keep.encryption_public();
+        let admin_pub = granter.encryption_public();
         let stale_rewrap = wrap_req(&keep_p, &keep_pub, &granter, &s2, scope, 1);
         let req = RotateScopeRequest {
             scope_id: hex::encode(scope),
             new_epoch: 2,
-            rewraps: vec![stale_rewrap],
+            rewraps: vec![
+                stale_rewrap,
+                wrap_req(&admin, &admin_pub, &granter, &s2, scope, 2),
+            ],
         };
         let err = svc
             .op_rotate_scope(&admin, req)
             .await
             .expect_err("a wrong-epoch rewrap must be rejected");
         assert_eq!(err.code(), tonic::Code::PermissionDenied);
-        let leaked = svc.op_get_scope_key(&keep_p, &hex::encode(scope), 2).await;
+        for who in [&keep_p, &admin] {
+            let leaked = svc.op_get_scope_key(who, &hex::encode(scope), 2).await;
+            assert!(
+                matches!(leaked, Err(ref e) if e.code() == tonic::Code::NotFound),
+                "a rejected rotation must persist no epoch-2 wrap"
+            );
+        }
+    }
+
+    /// A rotation that re-wraps the new scope key to everyone EXCEPT the caller is refused.
+    ///
+    /// This is the shape that silently destroyed a whole environment: the client computed its
+    /// re-wrap set from the grant "missing" list, which is empty once every member is already
+    /// provisioned, so a rotation re-sealed every secret to a new key and then wrapped that
+    /// key to nobody. The server reported success. Refusing it here means no client bug can
+    /// reach that outcome, regardless of how the re-wrap set was computed.
+    #[tokio::test]
+    async fn rotation_without_a_wrap_for_the_caller_is_refused() {
+        let svc = fresh_svc("v15-caller");
+        let granter = Identity::generate();
+        let keep = Identity::generate();
+        let keep_p = Principal::from_pubkey(keep.author_public().to_bytes());
+        let admin = Principal::from_pubkey(granter.author_public().to_bytes());
+        let scope = [9u8; 16];
+        let (_k2, s2) = generate_keyset(scope, 2);
+        let keep_pub = keep.encryption_public();
+        for rewraps in [
+            vec![wrap_req(&keep_p, &keep_pub, &granter, &s2, scope, 2)],
+            Vec::new(),
+        ] {
+            let req = RotateScopeRequest {
+                scope_id: hex::encode(scope),
+                new_epoch: 2,
+                rewraps,
+            };
+            let err = svc
+                .op_rotate_scope(&admin, req)
+                .await
+                .expect_err("a rotation the caller cannot recover must be refused");
+            assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        }
+        let stranded = svc.op_get_scope_key(&keep_p, &hex::encode(scope), 2).await;
         assert!(
-            matches!(leaked, Err(ref e) if e.code() == tonic::Code::NotFound),
-            "a rejected rotation must persist no epoch-2 wrap"
+            matches!(stranded, Err(ref e) if e.code() == tonic::Code::NotFound),
+            "a refused rotation must persist nothing"
         );
     }
 }

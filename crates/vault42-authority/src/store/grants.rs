@@ -16,10 +16,15 @@
 //! is project-wide and by contract applies to every environment in the project; the client
 //! already relies on that, so it is not a shortcut.
 //!
-//! `missing` is the operational half. It is the authorized member set minus those who
-//! already hold a scope-key wrap, and the client drives its provisioning loop from it. It
-//! doubles as the authorized-member set for rotation, so it must be exact: a name missing
-//! from it silently loses access, and a spurious name silently keeps it.
+//! `missing` is the operational half: the authorized member set minus those who already hold
+//! a scope-key wrap for the environment and epoch being asked about. A wrap is meaningful
+//! only against that pair, because the scope key it wraps belongs to one environment and is
+//! replaced at every rotation. Answering `missing` without both would report a member as
+//! provisioned in an environment they cannot read, or at an epoch that no longer exists.
+//!
+//! `missing` is a provisioning worklist and nothing more. It is deliberately NOT the
+//! authorized-member set: the two coincide only until the first member is provisioned, and a
+//! caller that needs everyone the grant authorizes — rotation does — must read `members`.
 
 use super::{is_constraint_violation, Store};
 use crate::error::{Error, Result};
@@ -40,6 +45,19 @@ pub struct NewGrant {
 pub struct GrantRow {
     pub id: String,
     pub env_id: Option<String>,
+}
+
+/// The environment scope a wrap is bound to. A scope key belongs to one environment and is
+/// replaced at each rotation, so a wrap without both coordinates describes nothing.
+pub struct WrapScope {
+    pub env_id: String,
+    pub epoch: i64,
+}
+
+/// Who a grant authorizes, and which of them still need a wrap for one `WrapScope`.
+pub struct GrantFulfilment {
+    pub members: Vec<String>,
+    pub missing: Vec<String>,
 }
 
 impl Store {
@@ -116,29 +134,43 @@ impl Store {
         .await
     }
 
-    /// Authorized members of a grant who do not yet hold a scope-key wrap.
-    pub async fn grant_missing_wraps(&self, grant_id: String) -> Result<Vec<String>> {
+    /// Everyone a grant authorizes, plus those of them still lacking a wrap for `scope`.
+    ///
+    /// Both halves come from one connection so they describe the same instant: a caller that
+    /// read them separately could re-wrap against a member list that changed in between.
+    pub async fn grant_fulfilment(
+        &self,
+        grant_id: String,
+        scope: WrapScope,
+    ) -> Result<GrantFulfilment> {
         self.call(move |conn| {
-            let authorized = authorized_members(conn, &grant_id)?;
+            check_wrap_env(conn, &grant_id, &scope.env_id)?;
+            let members = authorized_members(conn, &grant_id)?;
             let mut missing = Vec::new();
-            for account_id in authorized {
-                if !has_wrap(conn, &grant_id, &account_id)? {
-                    missing.push(account_id);
+            for account_id in &members {
+                if !has_wrap(conn, &grant_id, account_id, &scope)? {
+                    missing.push(account_id.clone());
                 }
             }
-            Ok(missing)
+            Ok(GrantFulfilment { members, missing })
         })
         .await
     }
 
-    /// Record that a scope-key wrap now exists for an authorized member.
+    /// Record that a scope-key wrap now exists for an authorized member at one `WrapScope`.
     ///
     /// Refuses an account the grant does not authorize: `missing` is computed against the
     /// same set, so admitting an outsider here would make the bookkeeping describe access
-    /// nobody granted.
-    pub async fn add_grant_wrap(&self, grant_id: String, account_id: String) -> Result<()> {
+    /// nobody granted. Refuses likewise an environment the grant does not cover.
+    pub async fn add_grant_wrap(
+        &self,
+        grant_id: String,
+        account_id: String,
+        scope: WrapScope,
+    ) -> Result<()> {
         let now = vault42_contract::signing::now_unix();
         self.call(move |conn| {
+            check_wrap_env(conn, &grant_id, &scope.env_id)?;
             let authorized = authorized_members(conn, &grant_id)?;
             if !authorized.iter().any(|member| member == &account_id) {
                 return Err(Error::BadRequest(
@@ -146,14 +178,36 @@ impl Store {
                 ));
             }
             conn.execute(
-                "INSERT OR IGNORE INTO grant_wraps(grant_id, account_id, created_at)
-                 VALUES(?1,?2,?3)",
-                params![grant_id, account_id, now],
+                "INSERT OR IGNORE INTO
+                   grant_wraps(grant_id, account_id, env_id, epoch, created_at)
+                 VALUES(?1,?2,?3,?4,?5)",
+                params![grant_id, account_id, scope.env_id, scope.epoch, now],
             )
             .map_err(|e| Error::Internal(e.into()))?;
             Ok(())
         })
         .await
+    }
+}
+
+/// Refuse an environment the grant does not cover.
+///
+/// The environment must belong to the grant's project, and an env-scoped grant covers only
+/// its own environment. Without this a wrap recorded against an unrelated environment would
+/// make that environment's `missing` list omit a member who was never provisioned there.
+fn check_wrap_env(conn: &rusqlite::Connection, grant_id: &str, env_id: &str) -> Result<()> {
+    let scoped_to: Option<String> = conn
+        .query_row(
+            "SELECT g.env_id FROM grants g
+               JOIN environments e ON e.project_id = g.project_id
+              WHERE g.id=?1 AND g.revoked_at IS NULL AND e.id=?2",
+            params![grant_id, env_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| Error::NotFound)?;
+    match scoped_to {
+        Some(only) if only != env_id => Err(Error::NotFound),
+        _ => Ok(()),
     }
 }
 
@@ -179,12 +233,18 @@ fn authorized_members(conn: &rusqlite::Connection, grant_id: &str) -> Result<Vec
         .map_err(|e| Error::Internal(e.into()))
 }
 
-/// True when a wrap already exists for this grant and account.
-fn has_wrap(conn: &rusqlite::Connection, grant_id: &str, account_id: &str) -> Result<bool> {
+/// True when a wrap already exists for this grant and account at `scope`.
+fn has_wrap(
+    conn: &rusqlite::Connection,
+    grant_id: &str,
+    account_id: &str,
+    scope: &WrapScope,
+) -> Result<bool> {
     let count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM grant_wraps WHERE grant_id=?1 AND account_id=?2",
-            params![grant_id, account_id],
+            "SELECT COUNT(*) FROM grant_wraps
+              WHERE grant_id=?1 AND account_id=?2 AND env_id=?3 AND epoch=?4",
+            params![grant_id, account_id, scope.env_id, scope.epoch],
             |row| row.get(0),
         )
         .map_err(|e| Error::Internal(e.into()))?;
