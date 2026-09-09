@@ -141,13 +141,50 @@ on the new-epoch revision is covered there and not by a vault42 gate.
 
   Held by `a_stranger_cannot_overwrite_an_env_secret`, watched failing with the rule removed.
 
-- **R22a Read and write are still not separated** — the residual, and it is the half a role model
-  needs. A member granted read-only access holds a wrap exactly as a writer does, because reading
-  requires one, so the membership rule refuses strangers and non-members and cannot refuse a member
-  who oversteps. Separating them needs `GrantedScopeKey` to carry a granter-signed role, which it
-  does not: its fields are the scope id, epoch, member id, wrapped DEK and the granter's signature
-  (`crates/vault42-core/src/keyset.rs`). That is a protocol change across the core crate, the
-  client and this server. **Status:** live. A read-only member can overwrite an environment secret.
+- **R22a Read and write are not yet separated, and the grant now carries the role that will
+  separate them** — a member granted read-only access holds a wrap exactly as a writer does,
+  because reading requires one, so the membership rule refuses strangers and non-members and
+  cannot refuse a member who oversteps.
+  **Status:** live. A read-only member can still overwrite an environment secret.
+
+  `GrantedScopeKey` now carries `role: ScopeRole` and `canonical_grant` frames it, so the role is
+  covered by the granter's signature and a holder cannot promote their own copy —
+  `editing_the_role_breaks_the_grant_signature` and
+  `the_role_changes_the_signed_message_and_nothing_else_does` hold that. Nothing enforces it yet,
+  deliberately, because enforcement without a client that mints roles would break every deposit
+  against the deployed server. The sequence is:
+
+  1. the role exists in the grant, signed, and nothing enforces it — **done**
+  2. `42ctl` mints `Writer` or `Reader` from the project role `grants` already reports
+  3. the server requires `Writer` for `PutEnvSecret`, and `from_pre_role_bytes` IS DELETED
+
+  Step 3 must not precede step 2. Step 3 must delete the pre-role path: a grant minted before
+  roles existed reads as `Writer`, which preserves today's capability during the migration and
+  would otherwise become a permanent way to satisfy a `Writer` requirement.
+  `pre_role_grant_reads_as_writer` fails when that path goes, and says on itself to be deleted
+  rather than repaired.
+
+  A blob-versioning shim that fell back to the old layout forever was considered and rejected:
+  the fallback IS the vulnerability kept as a code path, and it is the branch an attacker's grant
+  would take. The blob carries a `v42g2` prefix instead, so a pre-role grant can be refused by
+  name telling the operator to re-run `sync-keys`.
+
+- **R22d The role in a wrap is a snapshot, not a live reading of the grant** — decided, not
+  incidental. The role is fixed when the wrap is minted, so demoting somebody from write to read
+  in the control plane does not change the wrap they already hold: the demotion takes effect on
+  the next `sync-keys`, exactly as a removal takes effect on the next `rotate-scope`.
+
+  The alternative is for the server to consult the authority's grant on every write and treat the
+  wrap's role as a ceiling. That is rejected because it would put the authority on the per-request
+  path, which is the one thing this architecture is built to avoid: the contract is verified
+  offline precisely so the authority can idle at zero cost, and coupling writes to its
+  availability would mean the vault stops accepting writes when the control plane sleeps.
+
+  **The demotion lag is real and is the price.** `sync-keys` re-wraps every authorized member
+  unconditionally and the store upserts on `(owner, scope_id, epoch)`, so the new role replaces
+  the old — there IS a path, and an operator who demotes somebody for cause should run it
+  immediately, and rotate as well if they also want reading closed, which was already true before
+  roles existed. **Status:** accepted; the lag is documented rather than discovered.
 
 - **R22b How it stayed open** — the doc comment on the write path carried the sentence "the row is
   NOT owner-scoped — the seal to the scope public key is the access control". That is TRUE of

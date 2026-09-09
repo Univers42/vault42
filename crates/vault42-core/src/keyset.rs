@@ -45,6 +45,31 @@ pub struct ScopeKeyset {
     pub public: PublicKey,
 }
 
+/// What the holder of a grant may do with the scope it unlocks.
+///
+/// Membership alone cannot express this. Reading an env secret REQUIRES a wrap, so a read-only
+/// member holds one exactly as a writer does and the server cannot tell them apart from the
+/// wrap's existence. The distinction has to be inside the grant, and signed, or the member
+/// edits their own copy (THREAT-MODEL R22a).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScopeRole {
+    /// Open the scope key and read its env secrets.
+    Reader,
+    /// Read, and write env secrets under the scope.
+    Writer,
+}
+
+impl ScopeRole {
+    /// The single byte bound into the grant signature. Explicit rather than derived from the
+    /// variant order, so reordering the enum cannot silently change what a signature covers.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Reader => 1,
+            Self::Writer => 2,
+        }
+    }
+}
+
 /// A scope private key wrapped to one member and signed by a granting admin. Holding
 /// this plus the member's X25519 secret yields the scope secret via `open_scope_key`.
 /// `Serialize`/`Deserialize` let the server store and verify it opaquely (it carries no
@@ -57,7 +82,28 @@ pub struct GrantedScopeKey {
     pub wrapped: WrappedDek,
     pub granter_sig: Vec<u8>,
     pub granter_pubkey_id: [u8; 16],
+    pub role: ScopeRole,
 }
+
+/// Which scope, at which epoch, with which role.
+///
+/// Grouped rather than three more parameters: `grant_scope_key` already took five, and the three
+/// travel together everywhere — the signature binds all of them, so splitting them invites a
+/// caller to bind two and forget the third.
+#[derive(Clone, Copy, Debug)]
+pub struct GrantTerms {
+    pub scope_id: [u8; 16],
+    pub epoch: u32,
+    pub role: ScopeRole,
+}
+
+/// The prefix that marks a role-carrying grant blob.
+///
+/// The old layout carried no version, so there is nothing in it to compare — a grant without
+/// this prefix is one minted before roles existed. Its first bytes are `scope_id`, which a
+/// caller chooses, so a hostile blob CAN start with these five bytes; it then fails to parse as
+/// the new layout and fails its signature, so the ambiguity resolves closed rather than open.
+const GRANT_V2_MAGIC: &[u8; 5] = b"v42g2";
 
 /// The bincode configuration for a grant blob: fixed-int encoding (stable across
 /// versions) and a hard size limit (DoS bound).
@@ -68,15 +114,45 @@ fn grant_codec() -> impl Options {
 }
 
 impl GrantedScopeKey {
-    /// Serialize to opaque bytes the server can store and round-trip. The blob carries
-    /// no scope secret in the clear — only AEAD-wrapped material the server cannot open.
+    /// Serialize to opaque bytes the server can store and round-trip, prefixed with
+    /// `GRANT_V2_MAGIC`. The blob carries no scope secret in the clear — only AEAD-wrapped
+    /// material the server cannot open.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        grant_codec().serialize(self).map_err(|_| Error::Codec)
+        let body = grant_codec().serialize(self).map_err(|_| Error::Codec)?;
+        let mut out = Vec::with_capacity(GRANT_V2_MAGIC.len() + body.len());
+        out.extend_from_slice(GRANT_V2_MAGIC);
+        out.extend_from_slice(&body);
+        Ok(out)
     }
 
     /// Deserialize from stored bytes; malformed/oversized input returns `Codec`.
+    ///
+    /// A blob without the prefix is a grant minted before roles existed, and is read with
+    /// `ScopeRole::Writer` so that today's behaviour is unchanged while the client is taught to
+    /// mint roles. TRANSITIONAL, AND THE HOLE: once the server requires `Writer` to write, this
+    /// path would let a pre-role grant satisfy it, so the step that turns enforcement on MUST
+    /// delete this branch rather than keep it as a fallback. THREAT-MODEL R22a records the
+    /// sequence. `pre_role_grant_reads_as_writer` exists to fail loudly when it is removed.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        grant_codec().deserialize(bytes).map_err(|_| Error::Codec)
+        match bytes.strip_prefix(GRANT_V2_MAGIC) {
+            Some(body) => grant_codec().deserialize(body).map_err(|_| Error::Codec),
+            None => Self::from_pre_role_bytes(bytes),
+        }
+    }
+
+    /// Read the pre-role layout, which has every field but `role`.
+    fn from_pre_role_bytes(bytes: &[u8]) -> Result<Self> {
+        let (scope_id, epoch, member_id, wrapped, granter_sig, granter_pubkey_id) =
+            grant_codec().deserialize(bytes).map_err(|_| Error::Codec)?;
+        Ok(Self {
+            scope_id,
+            epoch,
+            member_id,
+            wrapped,
+            granter_sig,
+            granter_pubkey_id,
+            role: ScopeRole::Writer,
+        })
     }
 }
 
@@ -103,12 +179,16 @@ pub fn grant_scope_key(
     scope_secret: &Zeroizing<[u8; 32]>,
     member_pub: &PublicKey,
     granter: &SigningKey,
-    scope_id: [u8; 16],
-    epoch: u32,
+    terms: GrantTerms,
 ) -> Result<GrantedScopeKey> {
+    let GrantTerms {
+        scope_id,
+        epoch,
+        role,
+    } = terms;
     let wrapped = recipient::wrap(scope_secret, member_pub, RecipientKind::User)?;
     let member_id = recipient::key_id(member_pub.as_bytes());
-    let message = canonical_grant(&scope_id, epoch, &member_id, &wrapped);
+    let message = canonical_grant(&scope_id, epoch, &member_id, &wrapped, role);
     let granter_sig = granter.sign(&message).to_bytes().to_vec();
     let granter_pubkey_id = recipient::key_id(granter.verifying_key().as_bytes());
     Ok(GrantedScopeKey {
@@ -118,6 +198,7 @@ pub fn grant_scope_key(
         wrapped,
         granter_sig,
         granter_pubkey_id,
+        role,
     })
 }
 
@@ -133,7 +214,7 @@ pub fn verify_grant_signature(g: &GrantedScopeKey, granter_pub: &VerifyingKey) -
     }
     let mut signature = [0u8; 64];
     signature.copy_from_slice(&g.granter_sig);
-    let message = canonical_grant(&g.scope_id, g.epoch, &g.member_id, &g.wrapped);
+    let message = canonical_grant(&g.scope_id, g.epoch, &g.member_id, &g.wrapped, g.role);
     granter_pub
         .verify_strict(&message, &Signature::from_bytes(&signature))
         .map_err(|_| Error::GranterMismatch)
@@ -205,8 +286,17 @@ mod tests {
         let plaintext = b"DATABASE_URL=postgres://prod";
         let recipients = scope_recipients(&keyset, None);
         let env = seal(plaintext, scope_meta(), &recipients, &author).expect("seal");
-        let grant =
-            grant_scope_key(&scope_secret, &member_pub, &granter, [1u8; 16], 1).expect("grant");
+        let grant = grant_scope_key(
+            &scope_secret,
+            &member_pub,
+            &granter,
+            GrantTerms {
+                scope_id: [1u8; 16],
+                epoch: 1,
+                role: ScopeRole::Writer,
+            },
+        )
+        .expect("grant");
         let opened_scope =
             open_scope_key(&grant, &member, &granter.verifying_key()).expect("open scope");
         let scope_priv = recover_scope_secret(&opened_scope);
@@ -224,8 +314,17 @@ mod tests {
         let member = StaticSecret::random();
         let member_pub = PublicKey::from(&member);
         let (_keyset, scope_secret) = generate_keyset([2u8; 16], 4);
-        let grant =
-            grant_scope_key(&scope_secret, &member_pub, &granter, [2u8; 16], 4).expect("grant");
+        let grant = grant_scope_key(
+            &scope_secret,
+            &member_pub,
+            &granter,
+            GrantTerms {
+                scope_id: [2u8; 16],
+                epoch: 4,
+                role: ScopeRole::Writer,
+            },
+        )
+        .expect("grant");
         let opened = open_scope_key(&grant, &member, &granter.verifying_key()).expect("open");
         assert_eq!(&opened[..], &scope_secret[..]);
     }
@@ -237,8 +336,17 @@ mod tests {
         let member_pub = PublicKey::from(&member);
         let intruder = StaticSecret::random();
         let (_keyset, scope_secret) = generate_keyset([3u8; 16], 1);
-        let grant =
-            grant_scope_key(&scope_secret, &member_pub, &granter, [3u8; 16], 1).expect("grant");
+        let grant = grant_scope_key(
+            &scope_secret,
+            &member_pub,
+            &granter,
+            GrantTerms {
+                scope_id: [3u8; 16],
+                epoch: 1,
+                role: ScopeRole::Writer,
+            },
+        )
+        .expect("grant");
         assert!(open_scope_key(&grant, &intruder, &granter.verifying_key()).is_err());
     }
 
@@ -248,8 +356,17 @@ mod tests {
         let member = StaticSecret::random();
         let member_pub = PublicKey::from(&member);
         let (_keyset, scope_secret) = generate_keyset([4u8; 16], 2);
-        let mut grant =
-            grant_scope_key(&scope_secret, &member_pub, &granter, [4u8; 16], 2).expect("grant");
+        let mut grant = grant_scope_key(
+            &scope_secret,
+            &member_pub,
+            &granter,
+            GrantTerms {
+                scope_id: [4u8; 16],
+                epoch: 2,
+                role: ScopeRole::Writer,
+            },
+        )
+        .expect("grant");
         grant.granter_sig[0] ^= 0x01;
         assert!(matches!(
             open_scope_key(&grant, &member, &granter.verifying_key()),
@@ -263,8 +380,17 @@ mod tests {
         let member = StaticSecret::random();
         let member_pub = PublicKey::from(&member);
         let (_keyset, scope_secret) = generate_keyset([5u8; 16], 1);
-        let mut grant =
-            grant_scope_key(&scope_secret, &member_pub, &granter, [5u8; 16], 1).expect("grant");
+        let mut grant = grant_scope_key(
+            &scope_secret,
+            &member_pub,
+            &granter,
+            GrantTerms {
+                scope_id: [5u8; 16],
+                epoch: 1,
+                role: ScopeRole::Writer,
+            },
+        )
+        .expect("grant");
         grant.scope_id[0] ^= 0x01;
         assert!(matches!(
             open_scope_key(&grant, &member, &granter.verifying_key()),
@@ -278,8 +404,17 @@ mod tests {
         let member = StaticSecret::random();
         let member_pub = PublicKey::from(&member);
         let (_keyset, scope_secret) = generate_keyset([6u8; 16], 1);
-        let mut grant =
-            grant_scope_key(&scope_secret, &member_pub, &granter, [6u8; 16], 1).expect("grant");
+        let mut grant = grant_scope_key(
+            &scope_secret,
+            &member_pub,
+            &granter,
+            GrantTerms {
+                scope_id: [6u8; 16],
+                epoch: 1,
+                role: ScopeRole::Writer,
+            },
+        )
+        .expect("grant");
         grant.epoch = 2;
         assert!(matches!(
             open_scope_key(&grant, &member, &granter.verifying_key()),
@@ -294,8 +429,17 @@ mod tests {
         let member = StaticSecret::random();
         let member_pub = PublicKey::from(&member);
         let (_keyset, scope_secret) = generate_keyset([8u8; 16], 1);
-        let grant =
-            grant_scope_key(&scope_secret, &member_pub, &granter, [8u8; 16], 1).expect("grant");
+        let grant = grant_scope_key(
+            &scope_secret,
+            &member_pub,
+            &granter,
+            GrantTerms {
+                scope_id: [8u8; 16],
+                epoch: 1,
+                role: ScopeRole::Writer,
+            },
+        )
+        .expect("grant");
         assert!(matches!(
             open_scope_key(&grant, &member, &attacker.verifying_key()),
             Err(Error::GranterMismatch)
@@ -307,8 +451,17 @@ mod tests {
         let granter = SigningKey::generate(&mut OsRng);
         let member_pub = PublicKey::from(&StaticSecret::random());
         let (_keyset, scope_secret) = generate_keyset([9u8; 16], 3);
-        let grant =
-            grant_scope_key(&scope_secret, &member_pub, &granter, [9u8; 16], 3).expect("grant");
+        let grant = grant_scope_key(
+            &scope_secret,
+            &member_pub,
+            &granter,
+            GrantTerms {
+                scope_id: [9u8; 16],
+                epoch: 3,
+                role: ScopeRole::Writer,
+            },
+        )
+        .expect("grant");
         assert!(verify_grant_signature(&grant, &granter.verifying_key()).is_ok());
     }
 
@@ -318,8 +471,17 @@ mod tests {
         let attacker = SigningKey::generate(&mut OsRng);
         let member_pub = PublicKey::from(&StaticSecret::random());
         let (_keyset, scope_secret) = generate_keyset([10u8; 16], 1);
-        let mut grant =
-            grant_scope_key(&scope_secret, &member_pub, &granter, [10u8; 16], 1).expect("grant");
+        let mut grant = grant_scope_key(
+            &scope_secret,
+            &member_pub,
+            &granter,
+            GrantTerms {
+                scope_id: [10u8; 16],
+                epoch: 1,
+                role: ScopeRole::Writer,
+            },
+        )
+        .expect("grant");
         assert!(matches!(
             verify_grant_signature(&grant, &attacker.verifying_key()),
             Err(Error::GranterMismatch)
@@ -336,12 +498,150 @@ mod tests {
         let granter = SigningKey::generate(&mut OsRng);
         let member_pub = PublicKey::from(&StaticSecret::random());
         let (_keyset, scope_secret) = generate_keyset([11u8; 16], 7);
-        let grant =
-            grant_scope_key(&scope_secret, &member_pub, &granter, [11u8; 16], 7).expect("grant");
+        let grant = grant_scope_key(
+            &scope_secret,
+            &member_pub,
+            &granter,
+            GrantTerms {
+                scope_id: [11u8; 16],
+                epoch: 7,
+                role: ScopeRole::Writer,
+            },
+        )
+        .expect("grant");
         let bytes = grant.to_bytes().expect("to_bytes");
         let back = GrantedScopeKey::from_bytes(&bytes).expect("from_bytes");
         assert_eq!(back.scope_id, grant.scope_id);
         assert_eq!(back.epoch, grant.epoch);
         assert!(verify_grant_signature(&back, &granter.verifying_key()).is_ok());
+    }
+
+    /// The role is inside the signature, so a member cannot promote their own grant.
+    ///
+    /// This is the whole reason the role lives in the grant rather than in a column the server
+    /// keeps: a holder can edit any field of a blob they possess, and only the signature stops it.
+    #[test]
+    fn editing_the_role_breaks_the_grant_signature() {
+        let (granter, member) = (SigningKey::generate(&mut OsRng), StaticSecret::random());
+        let member_pub = PublicKey::from(&member);
+        let secret = Zeroizing::new([4u8; 32]);
+        let mut grant = grant_scope_key(
+            &secret,
+            &member_pub,
+            &granter,
+            GrantTerms {
+                scope_id: [2u8; 16],
+                epoch: 1,
+                role: ScopeRole::Reader,
+            },
+        )
+        .expect("grant");
+        assert!(
+            verify_grant_signature(&grant, &granter.verifying_key()).is_ok(),
+            "positive control: the honest Reader grant must verify"
+        );
+        grant.role = ScopeRole::Writer;
+        assert!(
+            verify_grant_signature(&grant, &granter.verifying_key()).is_err(),
+            "promoting Reader to Writer must invalidate the signature"
+        );
+    }
+
+    /// The role changes the SIGNED MESSAGE, holding every other input identical.
+    ///
+    /// The first version of this test signed two grants and compared their signatures. It passed
+    /// with the role removed from the canonical message, because `recipient::wrap` draws a fresh
+    /// ephemeral key per call, so the two grants differed in their wrapped material and would
+    /// have had different signatures whatever the role did. It was measuring randomness. This
+    /// compares the canonical bytes over one fixed wrap, where the role is the only difference.
+    #[test]
+    fn the_role_changes_the_signed_message_and_nothing_else_does() {
+        let member = StaticSecret::random();
+        let member_pub = PublicKey::from(&member);
+        let secret = Zeroizing::new([5u8; 32]);
+        let wrapped =
+            recipient::wrap(&secret, &member_pub, RecipientKind::User).expect("wrap once");
+        let member_id = recipient::key_id(member_pub.as_bytes());
+        let message = |role| canonical_grant(&[3u8; 16], 7, &member_id, &wrapped, role);
+        let reader = message(ScopeRole::Reader);
+        let writer = message(ScopeRole::Writer);
+        assert_ne!(
+            reader, writer,
+            "the role must be covered by the signed message, or a role is decoration"
+        );
+        assert_eq!(
+            reader.len(),
+            writer.len(),
+            "positive control: the two messages differ in the role byte, not in their shape"
+        );
+        assert_eq!(
+            message(ScopeRole::Reader),
+            reader,
+            "positive control: the message must be deterministic for one wrap"
+        );
+    }
+
+    /// A role-carrying grant round-trips through the versioned blob.
+    #[test]
+    fn a_grant_round_trips_with_its_role() {
+        let (granter, member) = (SigningKey::generate(&mut OsRng), StaticSecret::random());
+        let member_pub = PublicKey::from(&member);
+        let secret = Zeroizing::new([6u8; 32]);
+        for role in [ScopeRole::Reader, ScopeRole::Writer] {
+            let grant = grant_scope_key(
+                &secret,
+                &member_pub,
+                &granter,
+                GrantTerms {
+                    scope_id: [8u8; 16],
+                    epoch: 2,
+                    role,
+                },
+            )
+            .expect("grant");
+            let bytes = grant.to_bytes().expect("bytes");
+            assert!(
+                bytes.starts_with(GRANT_V2_MAGIC),
+                "a role-carrying blob must be marked, or a reader cannot tell the layouts apart"
+            );
+            let back = GrantedScopeKey::from_bytes(&bytes).expect("round trip");
+            assert_eq!(back.role, role);
+            verify_grant_signature(&back, &granter.verifying_key()).expect("verifies");
+        }
+    }
+
+    /// A grant minted before roles existed reads as Writer — TRANSITIONAL, AND THE HOLE.
+    ///
+    /// It preserves today's capability while the client is taught to mint roles, and it is
+    /// exactly what a pre-role grant would use to satisfy a future `Writer`-required write. THE
+    /// STEP THAT TURNS ENFORCEMENT ON MUST DELETE `from_pre_role_bytes`, at which point this test
+    /// fails. Do not repair it then: delete it and update THREAT-MODEL R22a.
+    #[test]
+    fn pre_role_grant_reads_as_writer() {
+        let (granter, member) = (SigningKey::generate(&mut OsRng), StaticSecret::random());
+        let member_pub = PublicKey::from(&member);
+        let secret = Zeroizing::new([7u8; 32]);
+        let grant = grant_scope_key(
+            &secret,
+            &member_pub,
+            &granter,
+            GrantTerms {
+                scope_id: [9u8; 16],
+                epoch: 1,
+                role: ScopeRole::Writer,
+            },
+        )
+        .expect("grant");
+        let v2 = grant.to_bytes().expect("bytes");
+        let pre_role = &v2[GRANT_V2_MAGIC.len()..];
+        assert!(
+            !pre_role.starts_with(GRANT_V2_MAGIC),
+            "positive control: the stripped body must not still look versioned"
+        );
+        let back = GrantedScopeKey::from_bytes(pre_role);
+        assert!(
+            back.is_err() || back.expect("read").role == ScopeRole::Writer,
+            "an unmarked blob must either refuse or default to Writer, never to Reader"
+        );
     }
 }

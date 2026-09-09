@@ -55,7 +55,7 @@ pub use inspect::verify_envelope_author;
 pub use kdf::KdfParams;
 pub use keyset::{
     generate_keyset, grant_scope_key, open_scope_key, scope_recipients, verify_grant_signature,
-    GrantedScopeKey, ScopeKeyset,
+    GrantTerms, GrantedScopeKey, ScopeKeyset, ScopeRole,
 };
 pub use keystore::{open_keystore, seal_keystore, KeystoreBlob};
 pub use metadata::{Kind, Metadata, ReadScope, DEFAULT_MODE};

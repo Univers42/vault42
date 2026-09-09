@@ -149,9 +149,9 @@ mod tests {
     use crate::store::Store;
     use std::sync::Arc;
     use vault42_core::{
-        generate_keyset, grant_scope_key, open, open_scope_key, scope_recipients, seal, Identity,
-        Kind, Metadata, ReadScope, RecipientPublicKey, RecipientSecretKey, ScopeKeyset,
-        DEFAULT_MODE,
+        generate_keyset, grant_scope_key, open, open_scope_key, scope_recipients, seal, GrantTerms,
+        Identity, Kind, Metadata, ReadScope, RecipientPublicKey, RecipientSecretKey, ScopeKeyset,
+        ScopeRole, DEFAULT_MODE,
     };
     use vault42_proto::vault::v1::WrapScopeKeyRequest;
     use zeroize::Zeroizing;
@@ -254,8 +254,11 @@ mod tests {
             scope_secret,
             member_pub,
             granter.signing_key(),
-            scope,
-            epoch,
+            GrantTerms {
+                scope_id: scope,
+                epoch,
+                role: ScopeRole::Writer,
+            },
         )
         .expect("grant")
         .to_bytes()

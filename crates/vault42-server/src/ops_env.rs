@@ -188,8 +188,8 @@ mod tests {
     use crate::store::Store;
     use std::sync::Arc;
     use vault42_core::{
-        generate_keyset, grant_scope_key, open, open_scope_key, scope_recipients, seal, Identity,
-        Kind, Metadata, ReadScope, RecipientSecretKey, DEFAULT_MODE,
+        generate_keyset, grant_scope_key, open, open_scope_key, scope_recipients, seal, GrantTerms,
+        Identity, Kind, Metadata, ReadScope, RecipientSecretKey, ScopeRole, DEFAULT_MODE,
     };
 
     /// A fresh service over a throwaway SQLite store (no grobase, no contract gate).
@@ -224,8 +224,11 @@ mod tests {
             secret,
             &member.encryption_public(),
             creator.signing_key(),
-            scope,
-            1,
+            GrantTerms {
+                scope_id: scope,
+                epoch: 1,
+                role: ScopeRole::Writer,
+            },
         )
         .expect("grant")
         .to_bytes()
@@ -314,8 +317,11 @@ mod tests {
             &scope_secret,
             &reader.encryption_public(),
             granter.signing_key(),
-            [7u8; 16],
-            1,
+            GrantTerms {
+                scope_id: [7u8; 16],
+                epoch: 1,
+                role: ScopeRole::Writer,
+            },
         )
         .expect("grant");
         let scope_priv =

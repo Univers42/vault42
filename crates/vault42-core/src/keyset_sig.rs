@@ -38,6 +38,7 @@ pub(crate) fn canonical_grant(
     epoch: u32,
     member_id: &[u8; 16],
     w: &WrappedDek,
+    role: crate::keyset::ScopeRole,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(160 + w.wrapped.len());
     frame(&mut out, GRANT_DOMAIN);
@@ -49,5 +50,6 @@ pub(crate) fn canonical_grant(
     frame(&mut out, &w.wrap_nonce);
     frame(&mut out, &[w.kind.code()]);
     frame(&mut out, &w.wrapped);
+    frame(&mut out, &[role.code()]);
     out
 }

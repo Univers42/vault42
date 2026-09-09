@@ -239,7 +239,7 @@ mod tests {
     use super::*;
     use crate::store::Store;
     use std::sync::Arc;
-    use vault42_core::{generate_keyset, grant_scope_key, Identity};
+    use vault42_core::{generate_keyset, grant_scope_key, GrantTerms, Identity, ScopeRole};
 
     /// A fresh service over a throwaway SQLite store (no grobase, no contract gate).
     fn fresh_svc(tag: &str) -> VaultSvc {
@@ -259,8 +259,11 @@ mod tests {
             &scope_secret,
             &member.encryption_public(),
             granter.signing_key(),
-            scope,
-            epoch,
+            GrantTerms {
+                scope_id: scope,
+                epoch,
+                role: ScopeRole::Writer,
+            },
         )
         .expect("grant")
         .to_bytes()
