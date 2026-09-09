@@ -166,6 +166,29 @@ To make the apps reachable **only** after pressing start, set `auto_start_machin
 `fly.toml` and `fly.authority.toml`. One line each. Everything else keeps working, but 42ctl
 will fail against a stopped app instead of waking it.
 
+### Mail delivery is configured and NOT proven
+
+The Titan credential authenticates — that was checked directly against `smtp.titan.email:465`
+— and the authority refuses to start when second factors are on and the mail settings are
+unusable, so a running authority proves the configuration parses. It does not prove the machine
+can reach Titan. Nothing has yet sent a message from the deployed app.
+
+That gap matters more than it looks, because **a delivery failure is invisible from outside**.
+`issue_code` hands delivery to a spawned task and answers `200 OK` either way, deliberately, so
+the response time cannot reveal whether an account exists. The only trace of a failure is a
+`could not deliver a one-time code` warning in the app logs. A user who never receives a code
+sees exactly what a user with a slow inbox sees.
+
+To prove it, request a code for an address that has an account and then look:
+
+```sh
+$FLY logs --app vault42-authority | grep -i "could not deliver"
+```
+
+Silence there, plus the code arriving, is the proof. This is deliberately not automated: every
+run delivers real mail to a real inbox, which is an outward-facing side effect that belongs to
+an operator's decision rather than a scheduled job's.
+
 ### The real-project scenario
 
 `scripts/smoke/inception-live.sh` drives the deployed vault with an actual project —
