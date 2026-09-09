@@ -334,6 +334,94 @@ async fn a_proof_for_another_account_is_refused_and_stored_bytes_are_verbatim() 
     );
 }
 
+/// Sign somebody up, invite them into `org` as a member, accept, and return their account id.
+///
+/// A grant refuses a grantee who is not already in the organization, which is the rule the
+/// composite foreign key on `team_members` exists to make unfalsifiable — so a test that grants
+/// has to make a real member first rather than merely inventing an account.
+async fn joined_member(app: &Arc<crate::app::App>, owner: &str, org: &str, email: &str) -> String {
+    let token = signed_up(app, email).await;
+    let (_, invite) = send(
+        app,
+        post_as(
+            &format!("/v1/orgs/{org}/invites"),
+            owner,
+            json!({"email": email, "role": "member"}),
+        ),
+    )
+    .await;
+    let invite_token = invite["token"].as_str().expect("invite token").to_string();
+    send(
+        app,
+        post_as("/v1/invites/accept", &token, json!({"token": invite_token})),
+    )
+    .await;
+    let (_, me) = send(app, get_with("/v1/auth/me", &format!("Bearer {token}"))).await;
+    me["account_id"].as_str().expect("account id").to_string()
+}
+
+/// The grant listing reports the role each grant was created with.
+///
+/// It did not, and the failure was silent in both directions. A client mints a scope-key wrap from
+/// this listing, the wrap carries the role that decides whether its holder may write, and 42ctl
+/// fails closed on a missing role — so a team granted `write` received Reader wraps and could not
+/// write, while the grant itself still read `write`. Nothing anywhere reported a mismatch, because
+/// only the wrap is enforced and only the grant is displayed.
+///
+/// Both roles are asserted rather than only `write`: a listing hard-coded to `write` would satisfy
+/// a one-role test, and that is the shape this test exists to refuse.
+#[tokio::test]
+async fn the_grant_listing_reports_each_grants_role() {
+    let app = fresh_app("p3-grant-role", None);
+    let (alice, org, _, _) = founder(&app, "p6role@archicode.codes", "rco").await;
+    let proj = project(&app, &alice, &org, "app").await;
+    let grants = format!("/v1/orgs/{org}/projects/{proj}/grants");
+
+    let mut expected = Vec::new();
+    for (email, role) in [
+        ("p6w@archicode.codes", "write"),
+        ("p6r@archicode.codes", "read"),
+    ] {
+        let member_id = joined_member(&app, &alice, &org, email).await;
+        let (status, _) = send(
+            &app,
+            post_as(
+                &grants,
+                &alice,
+                json!({"grantee_kind": "user", "grantee_id": member_id, "project_role": role}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "granting {role} must succeed");
+        expected.push(role.to_string());
+    }
+
+    let (status, body) = send(&app, get_with(&grants, &format!("Bearer {alice}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let listed: Vec<String> = body
+        .as_array()
+        .expect("an array of grants")
+        .iter()
+        .map(|g| {
+            g["project_role"]
+                .as_str()
+                .unwrap_or_else(|| panic!("every grant must report project_role; got {g}"))
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        listed.len(),
+        expected.len(),
+        "positive control: both grants must be listed, or the roles below prove nothing"
+    );
+    for role in expected {
+        assert!(
+            listed.contains(&role),
+            "the listing must report the {role} grant's role; got {listed:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_grant_cannot_name_a_grantee_or_environment_from_elsewhere() {
     let app = fresh_app("p3-grant-scope", None);

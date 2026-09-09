@@ -31,9 +31,15 @@ pub struct NewGrant {
 }
 
 /// A grant as the API reports it.
+///
+/// `project_role` is here because a client cannot mint a scope-key wrap without it: the wrap
+/// carries the role that decides whether its holder may write, and the only place the role is
+/// recorded is this grant. Omitting it from the listing made every wrap a Reader — a team granted
+/// write could not write, and no error said so anywhere.
 pub struct GrantRow {
     pub id: String,
     pub env_id: Option<String>,
+    pub project_role: String,
 }
 
 impl Store {
@@ -75,7 +81,7 @@ impl Store {
         self.call(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, env_id FROM grants
+                    "SELECT id, env_id, project_role FROM grants
                       WHERE project_id=?1 AND revoked_at IS NULL ORDER BY created_at, id",
                 )
                 .map_err(|e| Error::Internal(e.into()))?;
@@ -84,6 +90,7 @@ impl Store {
                     Ok(GrantRow {
                         id: row.get(0)?,
                         env_id: row.get(1)?,
+                        project_role: row.get(2)?,
                     })
                 })
                 .map_err(|e| Error::Internal(e.into()))?;

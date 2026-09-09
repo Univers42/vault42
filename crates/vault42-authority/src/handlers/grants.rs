@@ -74,6 +74,13 @@ pub struct GrantResp {
 pub struct ProjectGrantResp {
     id: String,
     env_id: Option<String>,
+    /// The role this grant confers, which a client needs to mint a scope-key wrap.
+    ///
+    /// It was absent, and the consequence was silent in both directions: 42ctl defaults a missing
+    /// role to the empty string, its fail-closed mapping turns that into Reader, and a team granted
+    /// write therefore received Reader wraps and could not write. Nothing reported an error — the
+    /// grant said write, the wrap said read, and only the wrap is enforced.
+    project_role: String,
 }
 
 /// Everyone the grant authorizes (`members`), and which of them still need a scope-key wrap
@@ -127,6 +134,7 @@ pub async fn list(
             .map(|row| ProjectGrantResp {
                 id: row.id,
                 env_id: row.env_id,
+                project_role: row.project_role,
             })
             .collect(),
     ))
