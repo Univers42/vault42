@@ -54,9 +54,9 @@ cargo test -p vault42-core aad::                                      # one modu
 
 `scripts/verify/run-gate-battery.sh [--fast|--all|<gate>...] [--strict]`.
 
-`--fast` is the per-PR subset, listed in `FAST_GATES` (currently v01 and v16); register a new fast
-gate there explicitly. `--all` runs every `v*-*.sh`. `m71-grobase-substrate.sh` does not match that
-glob and only runs when named.
+`--fast` is the per-PR subset, listed in `FAST_GATES`; register a new fast gate there explicitly.
+`--all` runs every `v*-*.sh`. `m71-grobase-substrate.sh` does not match that glob and only runs when
+named. Nine gates pass under `--all --strict` today: v01, v12, v16-v20, v25, v26.
 
 **Gates SKIP rather than fail when a prerequisite is missing**, so a fresh machine would report
 success having run nothing. Pass `--strict` to turn any SKIP into a failure; CI must use it. Gates
@@ -66,6 +66,16 @@ trusting it.
 A gate asserts on the tested command's **exit status**, never on a grep for a test count. Both
 existing forms of that mistake have been fixed and must not come back: a count drifts, and a
 `cmd; grep; chown` chain inside one `sh -c` returns `chown`'s status and discards the assertion.
+
+**Prove a new gate can fail before trusting it.** Break the thing it guards, watch it exit non-zero,
+restore, watch it pass. This has caught two false passes: v01 could not fail at all, and v26's first
+version passed with its load-bearing check deleted because each route-level assertion happened to be
+covered by a different protection. A gate that has never failed is a claim, not a check.
+
+An assertion driven through a route may be satisfied by something other than the rule you meant to
+test. When a rule has no reachable route that isolates it, reach past the routes: `Store::call` is
+`pub(crate)`, so a test can strip one row and assert the rule directly. `e2e_offboard.rs`'s
+`a_grant_never_authorizes_a_non_member` is the pattern.
 
 ## Architecture
 
@@ -140,20 +150,54 @@ Sessions hold only a BLAKE3 hash of an opaque 32-byte random bearer token. There
 with no claims cannot be tampered with, and revocation is a row update rather than waiting out an
 expiry.
 
+**`auth::handlers::mint_session` is the only place a sign-in mints a session**, and the second-factor
+check is inside it. That is the design, not an implementation detail: a new sign-in route cannot
+forget the check because it cannot mint a session without going through it. The GitHub device flow
+arrives the same way. Do not insert `insert_session` into a new login path — call `mint_session`.
+
+Two constraints in the wrap bookkeeping are worth knowing before touching grants. `fulfilled`
+returns `members` AND `missing`, and they answer different questions: `missing` is a provisioning
+worklist that empties as members are wrapped, `members` is everyone the grant authorizes. Rotation
+must read `members` — reading `missing` re-wraps nobody once provisioning has converged, which
+silently strands the environment. And a wrap is addressed by `(env_id, epoch)`, both required,
+because a project-wide grant spans environments and every rotation replaces the key.
+
+`authorized_members` resolves organization membership at read time rather than trusting the grant
+row, so no removal path can forget to revoke. `grants.grantee_id` is polymorphic and carries no
+foreign key, which is why the join is there.
+
+### Second factors and mail
+
+One-time codes are minted and verified here now; grobase used to do it. The proof format lives in
+`vault42-contract::otp`, which both mints and verifies it, so the two services cannot drift — a
+round-trip test in that one file is the guard. `VAULT42_OTP_PROOF_SECRET` is the shared secret, with
+`GOTRUE_JWT_SECRET` honoured as a legacy fallback.
+
+`MAIL_TRANSPORT` chooses delivery: `smtp` is production and the default, `file` plus `MAIL_OUTBOX`
+writes each message to a directory so a battery can read a code without a mailbox. **There is
+deliberately no transport that logs a code** — "a code never appears in a log line" is a property
+worth keeping true. Delivery is spawned, not awaited, so the response time cannot reveal whether an
+address has an account; a harness must therefore wait for a message beyond the ones already
+delivered, because a new request replaces the previous code rather than adding to it.
+
+`MAIL_FROM` and `MAIL_PASSWORD` have no defaults, and second factors refuse to start without them.
+`MAIL_TITAN` in the operator's `.env` is an address, not a credential — do not wire it as the SMTP
+password.
+
 ## Trip-wires
 
 Things that will mislead you if you assume otherwise:
 
-- **Storage backend selection is implicit.** `select_store` picks `GrobaseStore` whenever all five of
-  `GROBASE_QUERY_URL`, `GROBASE_ANON_KEY`, `GROBASE_APP_KEY`, `GROBASE_DB_ID`, `JWT_SECRET` are set;
-  the embedded SQLite store then disappears silently. Force it with `VAULT42_STORE=sqlite`. Only a
-  `tracing::info!` line reports which won.
-- **The two grobase seams are unrelated** despite the shared prefix. `GROBASE_URL` +
-  `INTERNAL_SERVICE_TOKEN` is the HMAC control plane (`vault42-grobase`); `GROBASE_QUERY_URL` is the
-  data plane behind Kong with JWT auth. Configuring one does not configure the other.
-- **The backends are not behaviorally equivalent.** SQLite serializes read-then-write through a
-  one-connection pool, so version bumps and audit-chain links are atomic. `GrobaseStore` does
-  read-head-then-insert over HTTP, a real TOCTOU under concurrency.
+- **grobase is rejected for this product's business model** and the authority replaces it, but its
+  seams are still in `vault42-server` and still reachable. `select_store` silently picks
+  `GrobaseStore` whenever all five of `GROBASE_QUERY_URL`, `GROBASE_ANON_KEY`, `GROBASE_APP_KEY`,
+  `GROBASE_DB_ID`, `JWT_SECRET` are set — force SQLite with `VAULT42_STORE=sqlite`, and note that
+  only a `tracing::info!` line says which won. The two grobase seams are unrelated despite the shared
+  prefix: `GROBASE_URL` + `INTERNAL_SERVICE_TOKEN` is the HMAC control plane, `GROBASE_QUERY_URL` is
+  the data plane behind Kong. The backends are not equivalent either — SQLite serializes
+  read-then-write through its one-connection pool so audit-chain links are atomic, while
+  `GrobaseStore` does read-head-then-insert over HTTP, a real TOCTOU. Storage errors all collapse to
+  `Status::internal("storage error")`, so misconfiguration needs `RUST_LOG=debug`.
 - **ABAC is not enforced.** `authz.v1` is generated, and `decide` / `verify_key` are implemented, but
   none of it is called. The only live authorization is owner-scoping. Only `audit_append` is wired.
 - **`Unseal` is a stub** that authenticates then always reports 100% unsealed. There is no seal state.
@@ -163,12 +207,8 @@ Things that will mislead you if you assume otherwise:
 - **Scope keys are flag-gated off.** `keyset.rs`, `ops_scope`, `ops_env`, `ops_rotate` and the seven
   scope/env RPCs are on `develop` but return `UNIMPLEMENTED` unless `VAULT42_SCOPE_KEYS_ENABLED` is
   set. 42ctl's scope verbs need it on.
-- **`// sec:` tagging is aspirational** — `.claude/AGENTS.md` mandates it but only two lines carry it,
-  and nothing enforces it. Treat the rule as binding on new code, not as a description of the tree.
 - **Never widen `.gitignore` to `keystore*`** — it silently swallows `keystore.rs` and
   `keystore_io.rs`. The runtime keystore is matched by `*.v42`; there is a comment saying so.
-- Storage-layer errors all collapse to `Status::internal("storage error")` and the grobase HTTP body
-  is discarded, so misconfiguration debugging needs `RUST_LOG=debug`.
 
 ## Conventions binding on every edit
 
