@@ -23,6 +23,7 @@
 
 mod app;
 mod auth;
+mod backup;
 mod config;
 mod contract;
 #[cfg(test)]
@@ -72,11 +73,17 @@ fn main() -> ExitCode {
     }
 }
 
-/// Build the runtime and serve until terminated.
+/// Run the requested subcommand, or serve when there is none.
 ///
 /// The mail check runs before the runtime exists, so an authority configured to demand second
 /// factors it cannot deliver refuses to start rather than accepting code requests it will drop.
+/// `backup` runs before that check and before the runtime, because taking a backup must work on
+/// an authority too misconfigured to serve — that is when it is most needed.
 fn run() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(command) = args.first() {
+        return run_subcommand(command, args.get(1).map(String::as_str));
+    }
     let cfg = Config::from_env();
     cfg.check_mail_usable()
         .map_err(|why| anyhow::anyhow!(why))?;
@@ -84,6 +91,20 @@ fn run() -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     runtime.block_on(serve(cfg))
+}
+
+/// Dispatch a subcommand, or explain what the binary accepts.
+fn run_subcommand(command: &str, argument: Option<&str>) -> anyhow::Result<()> {
+    match (command, argument) {
+        ("backup", Some(out)) => {
+            let db = Config::from_env().db_path;
+            backup::snapshot(&db, out)?;
+            println!("wrote a consistent snapshot of {db} to {out}");
+            Ok(())
+        }
+        ("backup", None) => anyhow::bail!("usage: vault42-authority backup <output-path>"),
+        _ => anyhow::bail!("unknown command {command:?}; the only one is `backup <output-path>`"),
+    }
 }
 
 /// Load the signing key, open the database, and serve HTTP.

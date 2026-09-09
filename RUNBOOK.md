@@ -149,6 +149,34 @@ retroactive):
   `keys init --force` mints an unrelated identity that re-wraps nothing. See THREAT-MODEL R18.
 - **Transit KEK / recovery key**: see fly + Vault Transit; crypto-shred is irreversible — confirm.
 
+## Backups
+
+`fly console --app vault42-authority --command "vault42-authority backup /data/backup-$(date +%F).db"`
+
+Then copy it off the volume. A backup that lives only on the volume it protects is not a backup.
+
+**Never back up by copying `authority.db`.** With write-ahead logging that file can be a nearly
+empty shell while every row lives in `authority.db-wal` beside it, so the copy restores CLEANLY
+and EMPTY: the copy succeeds, the restore succeeds, the server starts, and the vault is gone. No
+step reports an error, and you find out when you need it. `VACUUM INTO`, which is what the
+subcommand runs, asks SQLite for a consistent snapshot of the whole database including the log,
+as one file with no `-wal` or `-shm` to remember. It is safe against a live server and needs no
+downtime.
+
+The subcommand exists because the image is distroless: no shell, no `sqlite3`, nothing else on
+that machine can read the database. It refuses to overwrite an existing file, so a mistyped path
+cannot destroy the previous backup.
+
+To restore: stop the app, remove `authority.db`, `authority.db-wal` and `authority.db-shm`, put
+the snapshot in place as `authority.db`, and start. The signing key is a SEPARATE file and is not
+in the snapshot — restore `authority.key` too, or the authority will refuse to start rather than
+mint a replacement and invalidate every contract it ever issued.
+
+Gate `v28-backup-restore-drill` runs this whole cycle on every battery: it signs up an account,
+snapshots a live server, destroys the original, restores, and requires that account to still
+authenticate. It also asserts that the naive `.db`-only copy LOSES the account, so the reason for
+`VACUUM INTO` is enforced by a test rather than by this paragraph.
+
 ## Verify the audit chain — NOT IMPLEMENTED
 
 **No client verifies the chain.** `audit` takes only `--since` (`42ctl/src/cli.rs:234`); there is no
