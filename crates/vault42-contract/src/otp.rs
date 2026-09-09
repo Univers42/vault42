@@ -10,11 +10,21 @@
 /*                                                                            */
 /* ************************************************************************** */
 
-//! Server-side verification of a grobase email-OTP proof before a contract is issued.
-//! The proof is an HS256 JWT minted by grobase `/v1/auth/otp/verify` with the shared
-//! `GOTRUE_JWT_SECRET` (claims `otp`/`aud=otp-proof`/`exp`). We recompute the HMAC and
-//! check the audience, the bound email, and expiry — so the OTP is a REAL login gate
-//! enforced by the authority, not a client-only step.
+//! The email one-time-code proof: both ends of it, in one file.
+//!
+//! The proof is an HS256 JWT with claims `otp` (the bound address), `aud = otp-proof` and `exp`,
+//! signed with the shared `VAULT42_OTP_PROOF_SECRET`. `vault42-authority` mints it when somebody
+//! enters a code it mailed them; this crate verifies it before issuing a contract. So the code is
+//! a real login gate enforced server-side, not a client-only step.
+//!
+//! Minting lives beside verification on purpose. It used to be grobase that minted these, and the
+//! format was written down in two codebases; a round-trip test in one file is what stops the two
+//! directions drifting.
+//!
+//! One note for a reader expecting the usual JWT weakness: `alg` in the header is never trusted,
+//! because verification never dispatches on it. The signature is always recomputed as
+//! HMAC-SHA256 over the received `header.payload`, so a proof claiming `alg: none` or `alg: RS256`
+//! simply fails the comparison. The header is signed input, not instructions.
 
 use crate::signing::now_unix;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -24,6 +34,29 @@ use serde_json::Value;
 use sha2::Sha256;
 
 const SKEW_SECS: i64 = 30;
+
+/// The audience that separates a login proof from any other token signed with this secret.
+const AUDIENCE: &str = "otp-proof";
+
+/// Mint a proof binding `email`, expiring at `expires_at`.
+///
+/// The address is lowercased so a proof minted for `Dev@X` verifies for `dev@x`, matching how
+/// `verify_claims` compares. Nothing secret is in the claims: the proof says a code for this
+/// address was entered correctly before `exp`, and the signature is what makes that credible.
+pub fn mint_otp_proof(email: &str, secret: &[u8], expires_at: i64) -> Result<String, String> {
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+    let claims = serde_json::json!({
+        "otp": email.to_lowercase(),
+        "aud": AUDIENCE,
+        "exp": expires_at,
+    })
+    .to_string();
+    let payload = URL_SAFE_NO_PAD.encode(claims.as_bytes());
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| "hmac key".to_string())?;
+    mac.update(format!("{header}.{payload}").as_bytes());
+    let sig = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    Ok(format!("{header}.{payload}.{sig}"))
+}
 
 /// Verify `proof` (HS256) for `email` under `secret`; Err(reason) → the caller maps 401.
 pub fn verify_otp_proof(proof: &str, email: &str, secret: &[u8]) -> Result<(), String> {
@@ -54,7 +87,7 @@ fn verify_claims(payload: &str, email: &str) -> Result<(), String> {
         .decode(payload)
         .map_err(|_| "bad payload".to_string())?;
     let claims: Value = serde_json::from_slice(&raw).map_err(|_| "bad claims".to_string())?;
-    if claims.get("aud").and_then(Value::as_str) != Some("otp-proof") {
+    if claims.get("aud").and_then(Value::as_str) != Some(AUDIENCE) {
         return Err("wrong audience".into());
     }
     if claims.get("otp").and_then(Value::as_str) != Some(email.to_lowercase().as_str()) {
@@ -82,6 +115,39 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A proof minted by the shipped minter round-trips through the shipped verifier. This is
+    /// the assertion that keeps the two directions from drifting apart.
+    #[test]
+    fn what_the_minter_produces_the_verifier_accepts() {
+        let secret = b"shared-secret";
+        let proof = mint_otp_proof("Dev@Archicode.Codes", secret, now_unix() + 300).expect("mint");
+        verify_otp_proof(&proof, "dev@archicode.codes", secret).expect("round trip");
+        verify_otp_proof(&proof, "Dev@Archicode.Codes", secret).expect("case insensitive");
+        assert!(
+            verify_otp_proof(&proof, "someone@else.test", secret).is_err(),
+            "a proof is bound to one address"
+        );
+    }
+
+    /// A header claiming a different algorithm changes nothing, because verification never
+    /// dispatches on `alg` — it always recomputes HMAC-SHA256 over the received header.
+    #[test]
+    fn a_forged_alg_header_does_not_help() {
+        let secret = b"shared-secret";
+        let real = mint_otp_proof("a@x.test", secret, now_unix() + 300).expect("mint");
+        let payload = real.split('.').nth(1).expect("payload");
+        let sig = real.split('.').nth(2).expect("sig");
+        let none_alg = URL_SAFE_NO_PAD.encode(br#"{"alg":"none","typ":"JWT"}"#);
+        assert!(
+            verify_otp_proof(&format!("{none_alg}.{payload}.{sig}"), "a@x.test", secret).is_err(),
+            "swapping the header invalidates the signature over it"
+        );
+        assert!(
+            verify_otp_proof(&format!("{none_alg}.{payload}."), "a@x.test", secret).is_err(),
+            "and an empty signature is not accepted for any alg"
+        );
+    }
 
     fn mint(secret: &[u8], otp: &str, aud: &str, exp: i64) -> String {
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);

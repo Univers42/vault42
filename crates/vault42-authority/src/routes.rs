@@ -23,7 +23,8 @@ use crate::app::App;
 use crate::auth::handlers as auth;
 use crate::contract;
 use crate::handlers::{
-    environments, grants, groups, invites, offboard, orgs, projects, pubkeys, teams, variables,
+    environments, grants, groups, invites, offboard, orgs, projects, pubkeys, secondfactor, teams,
+    variables,
 };
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -53,6 +54,14 @@ fn auth_routes() -> Router<Arc<App>> {
         .route("/v1/auth/me", get(auth::me))
         .route("/v1/auth/passwd", post(auth::passwd))
         .route("/v1/auth/account", delete(offboard::account))
+        .route("/v1/auth/otp/request", post(secondfactor::request))
+        .route("/v1/auth/otp/verify", post(secondfactor::verify))
+        .route(
+            "/v1/auth/escrow",
+            axum::routing::put(secondfactor::escrow_put),
+        )
+        .route("/v1/auth/escrow/fetch", post(secondfactor::escrow_fetch))
+        .route("/v1/auth/mfa", post(secondfactor::set_mfa))
 }
 
 /// Organization and team routes.

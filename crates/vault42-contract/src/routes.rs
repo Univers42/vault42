@@ -126,7 +126,7 @@ async fn register(
 fn require_otp_proof(app: &App, req: &RegisterReq) -> Result<(), (StatusCode, String)> {
     let secret = app.otp_jwt_secret.as_deref().ok_or((
         StatusCode::INTERNAL_SERVER_ERROR,
-        "otp required but GOTRUE_JWT_SECRET not configured".into(),
+        "otp required but VAULT42_OTP_PROOF_SECRET not configured".into(),
     ))?;
     let email = req.email.as_deref().filter(|e| !e.is_empty());
     let (Some(email), Some(proof)) = (email, req.otp_proof.as_deref()) else {

@@ -283,6 +283,34 @@ DROP TABLE group_members;
 ALTER TABLE group_members_bound RENAME TO group_members;
 ";
 
+/// P5: one-time codes and keystore escrow.
+///
+/// `otp_codes` holds at most one live code per address, keyed on the address, so a new request
+/// replaces the old one. That is deliberate: letting codes accumulate would let somebody request
+/// a hundred and then have a hundred simultaneous chances to guess. `code_hash` is a BLAKE3
+/// digest bound to the address, never the code, and `attempts` is what bounds guessing against
+/// a six-digit space.
+///
+/// `escrow` holds the passphrase-wrapped keystore for multi-device use. The blob is ciphertext
+/// the authority cannot open — the passphrase never leaves the operator's machine — so this table
+/// is storage, not custody.
+const M7: &str = "
+CREATE TABLE IF NOT EXISTS otp_codes (
+  email       TEXT    NOT NULL PRIMARY KEY,
+  code_hash   TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL,
+  expires_at  INTEGER NOT NULL,
+  consumed_at INTEGER,
+  attempts    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS escrow (
+  email      TEXT    NOT NULL PRIMARY KEY,
+  blob       TEXT    NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+";
+
 /// The ordered migration ledger: `(version, name, sql)`.
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "accounts_sessions_tenants", M1),
@@ -291,6 +319,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (4, "variables", M4),
     (5, "grant_wraps_per_env_epoch", M5),
     (6, "group_members_bound_to_org", M6),
+    (7, "otp_codes_and_escrow", M7),
 ];
 
 /// Apply every migration not yet recorded, in version order.

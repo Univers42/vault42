@@ -20,6 +20,8 @@
 use crate::app::App;
 use crate::auth::{password, session, Principal};
 use crate::error::{Error, Result};
+use crate::handlers::secondfactor;
+use crate::store::Account;
 use crate::validate;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -30,10 +32,15 @@ use vault42_contract::signing::now_unix;
 use zeroize::Zeroizing;
 
 /// Signup and login request body.
+///
+/// `otp_proof` is absent on signup and on a login for an account with no second factor. When the
+/// account requires one it is mandatory, and it is the proof minted by `/v1/auth/otp/verify`.
 #[derive(Deserialize)]
 pub struct Credentials {
     email: String,
     password: String,
+    #[serde(default)]
+    otp_proof: Option<String>,
 }
 
 /// Password-change request body.
@@ -95,6 +102,22 @@ pub async fn login(
     if account.status != "active" || !password::verify(&secret, &account.password_hash) {
         return Err(Error::Unauthorized);
     }
+    mint_session(&app, &account, body.otp_proof.as_deref()).await
+}
+
+/// The one place a sign-in mints a session.
+///
+/// Every route that hands out a bearer token goes through here, and the second-factor check is
+/// inside it. That is the whole design: a new sign-in route cannot forget the check, because it
+/// cannot mint a session without asking this function, and this function has no way to skip it.
+/// The GitHub device flow arrives the same way, which matters most there — an external service's
+/// answer is the input, and that is where a forgotten check usually lives.
+pub(crate) async fn mint_session(
+    app: &App,
+    account: &Account,
+    otp_proof: Option<&str>,
+) -> Result<Json<LoginResp>> {
+    secondfactor::check_second_factor(app, (&account.email, account.mfa_required), otp_proof)?;
     let now = now_unix();
     let issued = session::mint(now, app.session_ttl_secs);
     app.store
@@ -107,7 +130,7 @@ pub async fn login(
         .await?;
     Ok(Json(LoginResp {
         token: issued.token,
-        account_id: account.id,
+        account_id: account.id.clone(),
         expires_at: issued.expires_at,
     }))
 }

@@ -42,11 +42,22 @@ impl Config {
                 .unwrap_or(365),
             register_token: std::env::var("VAULT42_REGISTER_TOKEN").ok(),
             require_otp: env("VAULT42_CONTRACT_REQUIRE_OTP", "false") == "true",
-            otp_jwt_secret: std::env::var("GOTRUE_JWT_SECRET")
-                .ok()
-                .map(String::into_bytes),
+            otp_jwt_secret: otp_proof_secret(),
         }
     }
+}
+
+/// The shared secret the one-time-code proof is signed with.
+///
+/// `VAULT42_OTP_PROOF_SECRET` is the name to use. `GOTRUE_JWT_SECRET` is honoured after it
+/// because that is what deployments set while grobase minted these proofs; the authority mints
+/// them now, so the grobase-shaped name is legacy and only kept so an existing deployment does
+/// not break on upgrade.
+fn otp_proof_secret() -> Option<Vec<u8>> {
+    std::env::var("VAULT42_OTP_PROOF_SECRET")
+        .or_else(|_| std::env::var("GOTRUE_JWT_SECRET"))
+        .ok()
+        .map(String::into_bytes)
 }
 
 /// Read an environment variable with a default.

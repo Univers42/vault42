@@ -36,7 +36,22 @@ use vault42_contract::signing::now_unix;
 /// A credible password that clears the length rule.
 pub(crate) const PASSWORD: &str = "correct horse battery staple";
 
+/// The proof secret every test app signs one-time-code proofs with.
+///
+/// Present in every test app so second factors are configured, and the battery therefore never
+/// exercises the unconfigured path by accident while thinking it tested the configured one.
+pub(crate) const PROOF_SECRET: &str = "test-otp-proof-secret";
+
+/// Where a test app's mail lands, derived from its tag so a test can read its own outbox.
+pub(crate) fn outbox_dir(tag: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("v42-outbox-{}-{tag}", std::process::id()))
+}
+
 /// Build an app over a fresh temporary database, optionally behind an invite token.
+///
+/// Mail goes to the file transport in this app's own outbox, which is the same seam an operator
+/// gets with `MAIL_TRANSPORT=file`. Nothing here is test-only: a battery driving a live authority
+/// over HTTP reads codes exactly the same way.
 pub(crate) fn fresh_app(tag: &str, register_token: Option<&str>) -> Arc<App> {
     let base = std::env::temp_dir().join(format!("v42-auth-{}-{tag}", std::process::id()));
     let db = format!("{}.db", base.display());
@@ -45,11 +60,25 @@ pub(crate) fn fresh_app(tag: &str, register_token: Option<&str>) -> Arc<App> {
         let _ = std::fs::remove_file(format!("{db}{suffix}"));
     }
     let _ = std::fs::remove_file(&key);
+    let outbox = outbox_dir(tag);
+    let _ = std::fs::remove_dir_all(&outbox);
     Arc::new(App {
         store: Store::open(&db, now_unix()).expect("open store"),
         authority: Authority::open(None, &key, 365).expect("load authority"),
         session_ttl_secs: 3600,
         register_token: register_token.map(str::to_string),
+        otp: crate::config::OtpConfig {
+            proof_secret: Some(PROOF_SECRET.as_bytes().to_vec()),
+            ttl_secs: 300,
+            proof_ttl_secs: 600,
+        },
+        mail: crate::config::MailConfig {
+            transport: crate::config::MailTransport::File(outbox.display().to_string()),
+            from: "devfast@archicode.codes".into(),
+            host: String::new(),
+            port: 0,
+            password: None,
+        },
     })
 }
 

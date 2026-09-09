@@ -15,6 +15,7 @@
 //! Built once in `main` and threaded through axum's `State`, so nothing here is a global
 //! and a test can construct its own `App` over a temporary database.
 
+use crate::config::{MailConfig, OtpConfig};
 use crate::store::Store;
 use vault42_contract::authority::Authority;
 
@@ -24,4 +25,22 @@ pub struct App {
     pub authority: Authority,
     pub session_ttl_secs: i64,
     pub register_token: Option<String>,
+    pub otp: OtpConfig,
+    pub mail: MailConfig,
+}
+
+impl App {
+    /// The secret one-time-code proofs are signed with, or `Forbidden` when second factors are
+    /// not configured.
+    ///
+    /// Failing rather than defaulting is the point. A missing secret means the deployment has no
+    /// second factor, and quietly treating that as "no proof needed" would turn an unconfigured
+    /// authority into one that skips the check it was asked to make.
+    pub fn proof_secret(&self) -> crate::error::Result<&[u8]> {
+        self.otp.proof_secret.as_deref().ok_or_else(|| {
+            crate::error::Error::BadRequest(
+                "second factors are not configured on this authority".into(),
+            )
+        })
+    }
 }

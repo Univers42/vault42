@@ -51,6 +51,14 @@ tonic-build = "0.12"
 protoc-bin-vendored = "3"
 # grobase REST client (P3) — HMAC service-auth + JSON
 hmac = "0.12"
+# SMTP with implicit TLS for one-time codes. rustls rather than native-tls so the container
+# needs no system OpenSSL, matching how the rest of the workspace reaches the network.
+lettre = { version = "0.11", default-features = false, features = [
+    "builder",
+    "smtp-transport",
+    "rustls-tls",
+    "ring",
+] }
 sha2 = "0.10"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }

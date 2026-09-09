@@ -20,6 +20,7 @@ pub mod offboard;
 pub mod orgs;
 pub mod projects;
 pub mod pubkeys;
+pub mod secondfactor;
 pub mod teams;
 pub mod variables;
 

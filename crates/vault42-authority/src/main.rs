@@ -34,11 +34,15 @@ mod e2e_orgs;
 #[cfg(test)]
 mod e2e_scope;
 #[cfg(test)]
+mod e2e_secondfactor;
+#[cfg(test)]
 mod e2e_vars;
 #[cfg(test)]
 mod e2e_wraps;
 mod error;
 mod handlers;
+mod mail;
+mod otp;
 mod pop;
 mod rbac;
 mod routes;
@@ -67,8 +71,13 @@ fn main() -> ExitCode {
 }
 
 /// Build the runtime and serve until terminated.
+///
+/// The mail check runs before the runtime exists, so an authority configured to demand second
+/// factors it cannot deliver refuses to start rather than accepting code requests it will drop.
 fn run() -> anyhow::Result<()> {
     let cfg = Config::from_env();
+    cfg.check_mail_usable()
+        .map_err(|why| anyhow::anyhow!(why))?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -87,6 +96,7 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
         public_key = %authority.public_hex(),
         bind = %cfg.bind,
         invite_gate = cfg.register_token.is_some(),
+        second_factors = cfg.second_factors_enabled(),
         "vault42-authority up — set public_key as vault42 VAULT42_CONTRACT_PUBKEY"
     );
     let app = Arc::new(App {
@@ -94,6 +104,8 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
         authority,
         session_ttl_secs: cfg.session_ttl_secs,
         register_token: cfg.register_token,
+        otp: cfg.otp,
+        mail: cfg.mail,
     });
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     axum::serve(listener, routes::router(app)).await?;
