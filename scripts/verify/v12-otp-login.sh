@@ -23,7 +23,7 @@
 set -uo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 WS="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-IMG="${V12_IMG:-mini-baas-rust-toolchain:latest}"
+IMG="${V12_IMG:-${RUST_TOOLCHAIN_IMG:-mini-baas-rust-toolchain:latest}}"
 VV="-v vault42-cargo-registry:/usr/local/cargo/registry -v vault42-cargo-git:/usr/local/cargo/git"
 ON="v12-on-$$"; OFF="v12-off-$$"; PORT_ON=19190; PORT_OFF=19191
 SECRET="v12-shared-gotrue-secret-$$"
