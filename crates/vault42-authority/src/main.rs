@@ -89,10 +89,11 @@ fn run() -> anyhow::Result<()> {
 /// Open the database, load the signing key, and serve HTTP.
 async fn serve(cfg: Config) -> anyhow::Result<()> {
     let store = store::Store::open(&cfg.db_path, now_unix())?;
-    let authority = Authority::open(
+    let authority = Authority::open_beside(
         cfg.seed_hex.as_deref(),
         &cfg.key_path,
         cfg.contract_ttl_days,
+        Some(&cfg.db_path),
     )?;
     tracing::info!(
         public_key = %authority.public_hex(),

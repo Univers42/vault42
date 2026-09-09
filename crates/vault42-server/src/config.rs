@@ -49,23 +49,29 @@ impl Config {
     /// Read the configuration from the environment, applying defaults. Storage is the
     /// grobase backend when its env is complete and `VAULT42_STORE != sqlite`; otherwise
     /// the embedded SQLite store (the offline `nano` default).
-    pub fn from_env() -> Self {
+    ///
+    /// Fails rather than defaulting when `VAULT42_CONTRACT_PUBKEY` is present but unusable.
+    /// Every other setting has a safe default; that one decides whether requests are gated by
+    /// a contract at all, and guessing "standalone" for a malformed value silently opens the
+    /// server. Refusing to boot is the only answer that cannot be mistaken for working.
+    pub fn from_env() -> anyhow::Result<Self> {
         let host = env("VAULT42_HOST", "0.0.0.0");
         let port = env("VAULT42_PORT", "8443");
         let grobase_store = match env("VAULT42_STORE", "").as_str() {
             "sqlite" => None,
             _ => grobase_store_cfg(),
         };
-        Self {
+        let contract_pub = contract_pub().map_err(|why| anyhow::anyhow!(why))?;
+        Ok(Self {
             bind: format!("{host}:{port}"),
             db_path: env("VAULT42_DB", "/data/vault42.db"),
             skew_secs: env("VAULT42_AUTH_SKEW_SECS", "120").parse().unwrap_or(120),
             grobase: grobase_cfg(),
             grobase_store,
-            contract_pub: contract_pub(),
+            contract_pub,
             max_secrets: env("VAULT42_MAX_SECRETS", "0").parse().unwrap_or(0),
             scope_keys_enabled: flag("VAULT42_SCOPE_KEYS_ENABLED"),
-        }
+        })
     }
 }
 
@@ -80,13 +86,41 @@ fn env(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-/// Parse the authority contract public key (hex, 32 bytes) from
-/// `VAULT42_CONTRACT_PUBKEY`. When set, the server requires a valid contract per request
-/// (managed multi-tenancy); when absent, it runs standalone (tenant "self").
-fn contract_pub() -> Option<[u8; 32]> {
-    let hex_key = std::env::var("VAULT42_CONTRACT_PUBKEY").ok()?;
-    let bytes = hex::decode(hex_key.trim()).ok()?;
-    bytes.as_slice().try_into().ok()
+/// Parse the authority contract public key (hex, 32 bytes) from `VAULT42_CONTRACT_PUBKEY`.
+///
+/// Unset means standalone (tenant "self"); set means every request must carry a contract this
+/// key signed. Those are opposite security postures, so a value that is present but unusable is
+/// an error rather than a third meaning. It used to fall back to standalone, which accepted any
+/// self-generated keypair with an unlimited quota — and looked entirely healthy doing it.
+///
+/// The reachable way to hit that is documented in our own runbook, which pipes `curl` into
+/// `fly secrets set`: if the authority is unreachable at that moment the secret becomes an empty
+/// string, and an empty string used to parse as "standalone".
+fn contract_pub() -> Result<Option<[u8; 32]>, String> {
+    parse_contract_pub(std::env::var("VAULT42_CONTRACT_PUBKEY").ok().as_deref())
+}
+
+/// The parsing half, separated so the rule can be tested without touching the environment.
+///
+/// `None` is unset and means standalone. `Some` must be usable: every other outcome is an error,
+/// because the two postures are opposite and there is no safe third reading.
+fn parse_contract_pub(raw: Option<&str>) -> Result<Option<[u8; 32]>, String> {
+    let Some(hex_key) = raw else {
+        return Ok(None);
+    };
+    let trimmed = hex_key.trim();
+    if trimmed.is_empty() {
+        return Err("VAULT42_CONTRACT_PUBKEY is set but empty; unset it to run standalone".into());
+    }
+    let bytes =
+        hex::decode(trimmed).map_err(|_| "VAULT42_CONTRACT_PUBKEY is not valid hex".to_string())?;
+    let key: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+        format!(
+            "VAULT42_CONTRACT_PUBKEY must be 32 bytes of hex, got {}",
+            bytes.len()
+        )
+    })?;
+    Ok(Some(key))
 }
 
 /// Build the grobase config iff both the URL and the service token are present.
@@ -116,4 +150,49 @@ fn grobase_store_cfg() -> Option<GrobaseStoreCfg> {
         jwt_secret: jwt_secret.into_bytes(),
         jwt_ttl: env("JWT_TTL_SECS", "3600").parse().unwrap_or(3600),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unset means standalone, and that is the only way to get standalone.
+    #[test]
+    fn only_an_absent_key_means_standalone() {
+        assert_eq!(parse_contract_pub(None), Ok(None));
+    }
+
+    /// A well-formed key is parsed, whitespace and case included.
+    #[test]
+    fn a_valid_key_is_accepted() {
+        let hex_key = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+        let parsed = parse_contract_pub(Some(hex_key))
+            .expect("valid")
+            .expect("some");
+        assert_eq!(hex::encode(parsed), hex_key);
+        assert!(parse_contract_pub(Some(&format!("  {hex_key}\n"))).is_ok());
+        assert!(parse_contract_pub(Some(&hex_key.to_uppercase())).is_ok());
+    }
+
+    /// A key that is present but unusable is an error, never a quiet fall back to standalone.
+    ///
+    /// The empty string is the case our own runbook can produce: it pipes `curl` into
+    /// `fly secrets set`, so an unreachable authority sets the secret to nothing. That used to
+    /// parse as standalone, which accepts any self-generated keypair with an unlimited quota.
+    #[test]
+    fn a_present_but_unusable_key_refuses_to_boot() {
+        for bad in [
+            "",
+            "   ",
+            "not hex at all",
+            "d75a98",
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511aff",
+            "\"d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a\"",
+        ] {
+            assert!(
+                parse_contract_pub(Some(bad)).is_err(),
+                "{bad:?} must refuse rather than fall back to standalone"
+            );
+        }
+    }
 }

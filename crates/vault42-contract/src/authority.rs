@@ -29,15 +29,34 @@ pub struct Authority {
 impl Authority {
     /// Load the signing key (env seed, persisted file, or freshly generated).
     pub fn load(cfg: &Config) -> anyhow::Result<Self> {
-        Self::open(cfg.seed_hex.as_deref(), &cfg.key_path, cfg.ttl_days)
+        Self::open_beside(
+            cfg.seed_hex.as_deref(),
+            &cfg.key_path,
+            cfg.ttl_days,
+            Some(&cfg.db_path),
+        )
     }
 
     /// Load the signing key from explicit parts, so a consumer outside this crate need
     /// not build a contract `Config` just to issue contracts.
     pub fn open(seed_hex: Option<&str>, key_path: &str, ttl_days: i64) -> anyhow::Result<Self> {
+        Self::open_beside(seed_hex, key_path, ttl_days, None)
+    }
+
+    /// Open the authority, refusing to mint a new signing key when `state_path` already exists.
+    ///
+    /// A database beside a missing key means contracts were issued by a key that is gone, so a
+    /// freshly generated one would boot cleanly and reject all of them. Callers that own state
+    /// should pass its path; `open` keeps the old behaviour for callers that have none.
+    pub fn open_beside(
+        seed_hex: Option<&str>,
+        key_path: &str,
+        ttl_days: i64,
+        state_path: Option<&str>,
+    ) -> anyhow::Result<Self> {
         let signing = match seed_hex {
             Some(hex_seed) => signing::from_hex_seed(hex_seed)?,
-            None => signing::load_or_create(key_path)?,
+            None => signing::load_or_create(key_path, state_path)?,
         };
         Ok(Self { signing, ttl_days })
     }
