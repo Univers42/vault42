@@ -94,6 +94,26 @@ pub async fn create(
     ))
 }
 
+/// Read one organization. Any member may resolve a slug to its canonical id.
+///
+/// This exists because a proof of possession must be signed over the organization's ID, not
+/// over whichever alias the user typed. Without a way to resolve slug to id, a client would
+/// sign over the slug and the server would verify over the id, so no proof would ever
+/// verify.
+pub async fn show(
+    State(app): State<Arc<App>>,
+    caller: Principal,
+    Path(org): Path<String>,
+) -> Result<Json<OrgResp>> {
+    let (org_id, _) = org_context(&app, org, &caller).await?;
+    let found = app.store.org_by_id(org_id).await?.ok_or(Error::NotFound)?;
+    Ok(Json(OrgResp {
+        id: found.id,
+        slug: found.slug,
+        name: found.name,
+    }))
+}
+
 /// List an organization's members. Any member may read the roster.
 pub async fn members(
     State(app): State<Arc<App>>,

@@ -30,6 +30,14 @@ pub enum OrgRole {
     Member,
 }
 
+/// What a grant lets its holder do on a project.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ProjectRole {
+    Admin,
+    Write,
+    Read,
+}
+
 /// A member's standing in a team.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TeamRole {
@@ -94,6 +102,29 @@ impl TeamRole {
     }
 }
 
+impl ProjectRole {
+    /// Parse a wire project role, refusing anything outside the closed set.
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw {
+            "admin" => Ok(Self::Admin),
+            "write" => Ok(Self::Write),
+            "read" => Ok(Self::Read),
+            other => Err(Error::BadRequest(format!(
+                "project_role must be admin, write or read; got {other:?}"
+            ))),
+        }
+    }
+
+    /// The stored form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Write => "write",
+            Self::Read => "read",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +149,15 @@ mod tests {
         assert!(!OrgRole::Member.can_administer());
         assert!(OrgRole::Member.require_admin().is_err());
         assert!(OrgRole::Admin.require_admin().is_ok());
+    }
+
+    #[test]
+    fn project_roles_round_trip_and_reject_junk() {
+        for role in [ProjectRole::Admin, ProjectRole::Write, ProjectRole::Read] {
+            assert_eq!(ProjectRole::parse(role.as_str()).unwrap(), role);
+        }
+        assert!(ProjectRole::parse("owner").is_err(), "owner is an org role");
+        assert!(ProjectRole::parse("execute").is_err());
     }
 
     #[test]

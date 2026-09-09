@@ -30,6 +30,13 @@ pub struct NewOrg {
     pub created_at: i64,
 }
 
+/// An organization as the API reports it.
+pub struct Org {
+    pub id: String,
+    pub slug: String,
+    pub name: String,
+}
+
 /// One membership row as the API reports it.
 pub struct Member {
     pub user_id: String,
@@ -78,6 +85,29 @@ impl Store {
             );
             match found {
                 Ok(id) => Ok(Some(id)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(error) => Err(Error::Internal(error.into())),
+            }
+        })
+        .await
+    }
+
+    /// Read one organization by id.
+    pub async fn org_by_id(&self, org_id: String) -> Result<Option<Org>> {
+        self.call(move |conn| {
+            let found = conn.query_row(
+                "SELECT id, slug, name FROM orgs WHERE id=?1",
+                params![org_id],
+                |row| {
+                    Ok(Org {
+                        id: row.get(0)?,
+                        slug: row.get(1)?,
+                        name: row.get(2)?,
+                    })
+                },
+            );
+            match found {
+                Ok(org) => Ok(Some(org)),
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(error) => Err(Error::Internal(error.into())),
             }

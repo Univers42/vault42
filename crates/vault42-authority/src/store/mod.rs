@@ -19,15 +19,25 @@
 //! rules in the schema are enforced by the database rather than by handlers.
 
 mod accounts;
+mod environments;
+mod grants;
+mod groups;
 mod invites;
 mod migrate;
 mod orgs;
+mod projects;
+mod pubkeys;
 mod sessions;
 mod teams;
 mod tenants;
 
+pub use environments::{Environment, NewEnvironment};
+pub use grants::NewGrant;
+pub use groups::NewGroup;
 pub use invites::{Acceptance, NewInvite};
 pub use orgs::NewOrg;
+pub use projects::NewProject;
+pub use pubkeys::MemberPubkey;
 pub use teams::{NewTeam, NewTeamMember};
 
 use crate::error::{Error, Result};

@@ -22,7 +22,7 @@
 use crate::app::App;
 use crate::auth::handlers as auth;
 use crate::contract;
-use crate::handlers::{invites, orgs, teams};
+use crate::handlers::{environments, grants, groups, invites, orgs, projects, pubkeys, teams};
 use axum::routing::{get, post};
 use axum::Router;
 use std::sync::Arc;
@@ -36,6 +36,8 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(auth_routes())
         .merge(org_routes())
         .merge(invite_routes())
+        .merge(project_routes())
+        .merge(grant_routes())
         .with_state(app)
 }
 
@@ -53,11 +55,54 @@ fn auth_routes() -> Router<Arc<App>> {
 fn org_routes() -> Router<Arc<App>> {
     Router::new()
         .route("/v1/orgs", post(orgs::create))
+        .route("/v1/orgs/:org", get(orgs::show))
         .route("/v1/orgs/:org/members", get(orgs::members))
         .route("/v1/orgs/:org/invites", post(orgs::invite))
         .route("/v1/orgs/:org/teams", post(teams::create).get(teams::list))
         .route("/v1/orgs/:org/teams/:team/members", post(teams::add_member))
         .route("/v1/orgs/:org/teams/:team/invites", post(teams::invite))
+}
+
+/// Projects, environments, groups, and member public keys.
+fn project_routes() -> Router<Arc<App>> {
+    Router::new()
+        .route(
+            "/v1/orgs/:org/projects",
+            post(projects::create).get(projects::list),
+        )
+        .route(
+            "/v1/projects/:project/environments",
+            post(environments::create).get(environments::list),
+        )
+        .route(
+            "/v1/projects/:project/environments/:env/scopekey",
+            axum::routing::put(environments::set_scope_key),
+        )
+        .route("/v1/projects/:project/groups", post(groups::create))
+        .route("/v1/groups/:group/members", post(groups::add_member))
+        .route("/v1/groups/:group/invites", post(groups::invite))
+        .route(
+            "/v1/orgs/:org/pubkey",
+            axum::routing::put(pubkeys::put_self),
+        )
+        .route("/v1/orgs/:org/users/:user/pubkey", get(pubkeys::get_member))
+}
+
+/// Project grants and their scope-key wraps.
+fn grant_routes() -> Router<Arc<App>> {
+    Router::new()
+        .route(
+            "/v1/orgs/:org/projects/:project/grants",
+            post(grants::create).get(grants::list),
+        )
+        .route(
+            "/v1/orgs/:org/projects/:project/grants/:grant/fulfilled",
+            get(grants::fulfilled),
+        )
+        .route(
+            "/v1/orgs/:org/projects/:project/grants/:grant/wraps",
+            post(grants::add_wrap),
+        )
 }
 
 /// Invite redemption and lookup.

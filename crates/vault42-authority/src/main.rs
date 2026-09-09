@@ -29,8 +29,11 @@ mod contract;
 mod e2e;
 #[cfg(test)]
 mod e2e_orgs;
+#[cfg(test)]
+mod e2e_scope;
 mod error;
 mod handlers;
+mod pop;
 mod rbac;
 mod routes;
 mod store;
