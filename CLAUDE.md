@@ -52,30 +52,10 @@ cargo test -p vault42-core aad::                                      # one modu
 
 ### The verify gates
 
-`scripts/verify/run-gate-battery.sh [--fast|--all|<gate>...] [--strict]`.
-
-`--fast` is the per-PR subset, listed in `FAST_GATES`; register a new fast gate there explicitly.
-`--all` runs every `v*-*.sh`. `m71-grobase-substrate.sh` does not match that glob and only runs when
-named. Nine gates pass under `--all --strict` today: v01, v12, v16-v20, v25, v26.
-
-**Gates SKIP rather than fail when a prerequisite is missing**, so a fresh machine would report
-success having run nothing. Pass `--strict` to turn any SKIP into a failure; CI must use it. Gates
-are invoked with `sh`, and `/bin/sh` is bash on this box, so test a new gate under `dash` before
-trusting it.
-
-A gate asserts on the tested command's **exit status**, never on a grep for a test count. Both
-existing forms of that mistake have been fixed and must not come back: a count drifts, and a
-`cmd; grep; chown` chain inside one `sh -c` returns `chown`'s status and discards the assertion.
-
-**Prove a new gate can fail before trusting it.** Break the thing it guards, watch it exit non-zero,
-restore, watch it pass. This has caught two false passes: v01 could not fail at all, and v26's first
-version passed with its load-bearing check deleted because each route-level assertion happened to be
-covered by a different protection. A gate that has never failed is a claim, not a check.
-
-An assertion driven through a route may be satisfied by something other than the rule you meant to
-test. When a rule has no reachable route that isolates it, reach past the routes: `Store::call` is
-`pub(crate)`, so a test can strip one row and assert the rule directly. `e2e_offboard.rs`'s
-`a_grant_never_authorizes_a_non_member` is the pattern.
+`scripts/verify/run-gate-battery.sh [--fast|--all|<gate>...] [--strict]`. Ten gates pass under
+`--all --strict` today: v01, v12, v16-v20, v25-v27. **The discipline that keeps them honest lives in
+`.claude/rules/verify-gates.md` and every rule in it was written by a gate that lied — read it before
+adding or trusting one.**
 
 ## Architecture
 
