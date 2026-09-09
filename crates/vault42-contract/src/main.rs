@@ -44,10 +44,14 @@ fn run() -> anyhow::Result<()> {
     runtime.block_on(serve(cfg))
 }
 
-/// Open the registry, load the signing key, and serve the HTTP authority.
+/// Load the signing key, open the registry, and serve the HTTP authority.
+///
+/// The key is loaded FIRST and the ordering is load-bearing. `Authority::load` tells a genuine first
+/// run from a lost volume by asking whether the registry exists, so opening the store first creates
+/// the very evidence it reads and every fresh deployment refuses to boot.
 async fn serve(cfg: Config) -> anyhow::Result<()> {
-    let store = store::Store::open(&cfg.db_path)?;
     let authority = authority::Authority::load(&cfg)?;
+    let store = store::Store::open(&cfg.db_path)?;
     tracing::info!(
         public_key = %authority.public_hex(),
         bind = %cfg.bind,
