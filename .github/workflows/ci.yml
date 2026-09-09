@@ -5,6 +5,15 @@ on:
     branches: [main, develop]
   pull_request:
 
+# One commit produced two identical push runs, which queued two deploys of the same image
+# behind the same lock. Collapsing superseded runs also means a rapid sequence of pushes
+# deploys the last one rather than each in turn. A cancelled run reports conclusion
+# `cancelled`, and the deploy job requires `success`, so cancelling here can never release
+# something CI did not finish checking.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Mirrors grobase's strictness: fmt clean, clippy warnings-as-errors, tests green, the gate
 # battery green under --strict, supply-chain (audit + deny) clean, no committed secrets.
 # buf (P1) and semgrep (P8) are added with the phases that introduce protobuf and the SSH

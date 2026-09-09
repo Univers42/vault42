@@ -130,7 +130,24 @@ bills no compute; a request wakes it in about a second and a half. Measured cold
 machines stopped to a green smoke run: 3.5s.
 
 Neither app has a dedicated IPv4 (that is a paid add-on); both use fly's shared v4 and a free
-dedicated v6.
+dedicated v6. Each app runs ONE machine, because every deploy passes `--ha=false`; fly's default
+is two, which would double the compute bill for apps serving one operator. And there is no
+`fly-builder-*` app in the org, because builds happen on the machine or runner doing the deploy
+rather than on a fly remote builder, which is itself a billed machine.
+
+Audited state, which is the cheapest shape two separate apps can take:
+
+| Resource | Count | Note |
+|---|---|---|
+| Apps | 2 | authority and server, separate binaries and separate volumes |
+| Machines | 1 each | `shared-cpu-1x`, 256 MB, the smallest fly offers |
+| Volumes | 1 GB each | the fly minimum, encrypted, with scheduled snapshots |
+| Dedicated IPv4 | 0 | the only paid networking add-on, avoided |
+| Managed Postgres / Redis / builders | 0 | none, and none needed |
+
+One app instead of two would save one volume. It would also need a supervisor inside a
+distroless image that has no shell, and would put the contract signing key on the same volume as
+the vault's data. Neither is worth $0.15 a month.
 
 To take control of the switch by hand, from the Actions tab run the **machines** workflow and
 pick `status`, `stop`, or `start`. The same thing locally:
