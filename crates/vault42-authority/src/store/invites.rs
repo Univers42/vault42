@@ -178,6 +178,7 @@ fn enrol(
     match invite.scope_kind.as_str() {
         "org" => enrol_in_org(tx, invite, acceptance),
         "team" => enrol_in_team(tx, invite, acceptance),
+        "group" => enrol_in_group(tx, invite, acceptance),
         other => Err(Error::BadRequest(format!(
             "invites of kind {other:?} cannot be accepted yet"
         ))),
@@ -239,6 +240,40 @@ fn enrol_in_team(
             Error::Internal(error.into())
         }
     })?;
+    Ok(())
+}
+
+/// Add the caller to the invited group, which requires organization membership.
+fn enrol_in_group(
+    tx: &rusqlite::Transaction<'_>,
+    invite: &InviteRow,
+    acceptance: &Acceptance,
+) -> Result<()> {
+    let org_id: String = tx
+        .query_row(
+            "SELECT p.org_id FROM groups g JOIN projects p ON p.id = g.project_id WHERE g.id=?1",
+            params![invite.scope_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| Error::NotFound)?;
+    let member: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM org_members WHERE org_id=?1 AND account_id=?2",
+            params![org_id, acceptance.account_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| Error::Internal(e.into()))?;
+    if member == 0 {
+        return Err(Error::BadRequest(
+            "accept the organization invite first; a group member must belong to the organization"
+                .into(),
+        ));
+    }
+    tx.execute(
+        "INSERT OR IGNORE INTO group_members(group_id, account_id, created_at) VALUES(?1,?2,?3)",
+        params![invite.scope_id, acceptance.account_id, acceptance.now],
+    )
+    .map_err(|e| Error::Internal(e.into()))?;
     Ok(())
 }
 

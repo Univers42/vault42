@@ -118,10 +118,91 @@ CREATE INDEX IF NOT EXISTS invites_scope ON invites(scope_kind, scope_id);
 CREATE INDEX IF NOT EXISTS invites_email ON invites(email);
 ";
 
+/// P3: projects, environments, groups, member public keys, and project grants.
+///
+/// A project id must be a parseable UUID, not an arbitrary string: 42ctl derives a scope id
+/// as `blake3(project_uuid_bytes ‖ env_name)[..16]`, so a non-UUID project id has no scope
+/// and the whole env-secret path breaks. The schema cannot express that, so the handler
+/// generates v4 UUIDs and validation refuses anything else.
+///
+/// `member_pubkeys` carries the same composite foreign key trick as `team_members`: you
+/// cannot register keys for an organization you do not belong to.
+///
+/// `grants.env_id` is NULL for a project-wide grant, which by contract applies to every
+/// environment in the project. That is a semantic the client already relies on.
+const M3: &str = "
+CREATE TABLE IF NOT EXISTS projects (
+  id         TEXT    NOT NULL PRIMARY KEY,
+  org_id     TEXT    NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  slug       TEXT    NOT NULL,
+  name       TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE (org_id, slug)
+);
+
+CREATE TABLE IF NOT EXISTS environments (
+  id           TEXT    NOT NULL PRIMARY KEY,
+  project_id   TEXT    NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name         TEXT    NOT NULL,
+  scope_pubkey TEXT,
+  scope_epoch  INTEGER NOT NULL DEFAULT 0,
+  created_at   INTEGER NOT NULL,
+  UNIQUE (project_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS groups (
+  id         TEXT    NOT NULL PRIMARY KEY,
+  project_id TEXT    NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name       TEXT    NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+  group_id   TEXT    NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  account_id TEXT    NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (group_id, account_id)
+);
+
+CREATE TABLE IF NOT EXISTS member_pubkeys (
+  org_id      TEXT    NOT NULL,
+  account_id  TEXT    NOT NULL,
+  x25519_pub  TEXT    NOT NULL,
+  ed25519_pub TEXT    NOT NULL,
+  v42_address TEXT    NOT NULL,
+  pubkey_sig  TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (org_id, account_id),
+  FOREIGN KEY (org_id, account_id)
+    REFERENCES org_members(org_id, account_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS grants (
+  id           TEXT    NOT NULL PRIMARY KEY,
+  project_id   TEXT    NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  grantee_kind TEXT    NOT NULL CHECK (grantee_kind IN ('user','team')),
+  grantee_id   TEXT    NOT NULL,
+  project_role TEXT    NOT NULL CHECK (project_role IN ('read','write','admin')),
+  env_id       TEXT    REFERENCES environments(id) ON DELETE CASCADE,
+  granted_by   TEXT    NOT NULL REFERENCES accounts(id),
+  created_at   INTEGER NOT NULL,
+  revoked_at   INTEGER
+);
+CREATE INDEX IF NOT EXISTS grants_project ON grants(project_id);
+
+CREATE TABLE IF NOT EXISTS grant_wraps (
+  grant_id   TEXT    NOT NULL REFERENCES grants(id) ON DELETE CASCADE,
+  account_id TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (grant_id, account_id)
+);
+";
+
 /// The ordered migration ledger: `(version, name, sql)`.
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "accounts_sessions_tenants", M1),
     (2, "orgs_teams_invites", M2),
+    (3, "projects_envs_groups_pubkeys_grants", M3),
 ];
 
 /// Apply every migration not yet recorded, in version order.

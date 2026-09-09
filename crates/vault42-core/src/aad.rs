@@ -24,20 +24,13 @@
 //! changing the canonical bytes — and thus the signature. Callers must pass a
 //! de-duplicated recipient set (enforced in `envelope`).
 
+use crate::framing::frame;
 use crate::metadata::Metadata;
 
 /// Domain separator so AAD bytes can never collide with any other signed context.
 /// Bumped v1→v2 when the path-aware metadata fields joined the framing: a v1
 /// envelope can never be mistaken for a v2 one (the domain tag itself differs).
 const DOMAIN: &[u8] = b"vault42/aad/v2";
-
-/// Append one length-prefixed field: `<len> ':' <value> '\n'`.
-fn frame(out: &mut Vec<u8>, value: &[u8]) {
-    out.extend_from_slice(value.len().to_string().as_bytes());
-    out.push(b':');
-    out.extend_from_slice(value);
-    out.push(b'\n');
-}
 
 /// Build the canonical AAD: the domain tag, the metadata in a FIXED order, then the
 /// recipient set sorted by id and framed as `(id, kind)` pairs (count-prefixed).
