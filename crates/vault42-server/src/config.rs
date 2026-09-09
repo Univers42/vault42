@@ -46,9 +46,19 @@ pub struct Config {
 }
 
 impl Config {
-    /// Read the configuration from the environment, applying defaults. Storage is the
-    /// grobase backend when its env is complete and `VAULT42_STORE != sqlite`; otherwise
-    /// the embedded SQLite store (the offline `nano` default).
+    /// Read the configuration from the environment, applying defaults. Storage is SQLite
+    /// unless `VAULT42_STORE=grobase` asks for the grobase backend explicitly.
+    ///
+    /// The choice used to be inferred: grobase won whenever five environment variables
+    /// happened to be set together and nobody had said `VAULT42_STORE=sqlite`. That made a
+    /// leftover deployment variable enough to move the vault's data plane onto a backend this
+    /// product has rejected, silently, with only a `tracing::info!` line naming the winner.
+    /// The two backends are not equivalent: SQLite serialises read-then-write through a
+    /// one-connection pool so audit-chain links are atomic, while the grobase store does
+    /// read-head-then-insert over HTTP, which is a real TOCTOU on the audit chain.
+    ///
+    /// Opting in has to be deliberate now. `VAULT42_STORE=sqlite` still works and is the
+    /// default, so nothing that was explicit before changes meaning.
     ///
     /// Fails rather than defaulting when `VAULT42_CONTRACT_PUBKEY` is present but unusable.
     /// Every other setting has a safe default; that one decides whether requests are gated by
@@ -57,10 +67,9 @@ impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let host = env("VAULT42_HOST", "0.0.0.0");
         let port = env("VAULT42_PORT", "8443");
-        let grobase_store = match env("VAULT42_STORE", "").as_str() {
-            "sqlite" => None,
-            _ => grobase_store_cfg(),
-        };
+        let grobase_store = wants_grobase_store(&env("VAULT42_STORE", ""))
+            .then(grobase_store_cfg)
+            .flatten();
         let contract_pub = contract_pub().map_err(|why| anyhow::anyhow!(why))?;
         Ok(Self {
             bind: format!("{host}:{port}"),
@@ -136,6 +145,15 @@ fn grobase_cfg() -> Option<GrobaseCfg> {
 /// Build the grobase storage config iff every required var is present: the Kong URL,
 /// the public + app API keys, the mount id, and the JWT secret (`JWT_TTL_SECS`
 /// defaults to one hour).
+/// Whether `asked` selects the grobase store. Only the exact opt-in does.
+///
+/// Separated from reading the environment so the rule is tested without env races, which is the
+/// same reason `parse_contract_pub` is separate: a decision that changes where the vault's data
+/// lives should be provable without a process-wide variable.
+fn wants_grobase_store(asked: &str) -> bool {
+    asked == "grobase"
+}
+
 fn grobase_store_cfg() -> Option<GrobaseStoreCfg> {
     let kong = std::env::var("GROBASE_QUERY_URL").ok()?;
     let anon_key = std::env::var("GROBASE_ANON_KEY").ok()?;
@@ -155,6 +173,24 @@ fn grobase_store_cfg() -> Option<GrobaseStoreCfg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only the exact opt-in selects grobase; everything else, unset included, stays on SQLite.
+    ///
+    /// This is the whole point of requiring an opt-in: five leftover variables from an old
+    /// deployment used to be enough to move the data plane, and the only notice was a log line.
+    #[test]
+    fn only_an_explicit_opt_in_selects_the_grobase_store() {
+        assert!(wants_grobase_store("grobase"));
+        for other in [
+            "", "sqlite", "SQLITE", "Grobase", "GROBASE", " grobase", "grobase ", "postgres", "1",
+            "true", "yes", "none",
+        ] {
+            assert!(
+                !wants_grobase_store(other),
+                "{other:?} must not move the vault's data plane onto grobase"
+            );
+        }
+    }
 
     /// Unset means standalone, and that is the only way to get standalone.
     #[test]

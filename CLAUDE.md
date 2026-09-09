@@ -169,10 +169,10 @@ password.
 Things that will mislead you if you assume otherwise:
 
 - **grobase is rejected for this product's business model** and the authority replaces it, but its
-  seams are still in `vault42-server` and still reachable. `select_store` silently picks
-  `GrobaseStore` whenever all five of `GROBASE_QUERY_URL`, `GROBASE_ANON_KEY`, `GROBASE_APP_KEY`,
-  `GROBASE_DB_ID`, `JWT_SECRET` are set — force SQLite with `VAULT42_STORE=sqlite`, and note that
-  only a `tracing::info!` line says which won. The two grobase seams are unrelated despite the shared
+  seams are still in `vault42-server` and still reachable, but no longer by accident: the grobase
+  store now needs `VAULT42_STORE=grobase` explicitly. It used to win whenever all five of
+  `GROBASE_QUERY_URL`, `GROBASE_ANON_KEY`, `GROBASE_APP_KEY`, `GROBASE_DB_ID` and `JWT_SECRET`
+  happened to be set, with only a `tracing::info!` line naming the winner. The two grobase seams are unrelated despite the shared
   prefix: `GROBASE_URL` + `INTERNAL_SERVICE_TOKEN` is the HMAC control plane, `GROBASE_QUERY_URL` is
   the data plane behind Kong. The backends are not equivalent either — SQLite serializes
   read-then-write through its one-connection pool so audit-chain links are atomic, while
