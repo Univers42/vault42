@@ -251,6 +251,38 @@ CREATE TABLE grant_wraps (
 CREATE INDEX IF NOT EXISTS grant_wraps_scope ON grant_wraps(env_id, epoch);
 ";
 
+/// P4.6: a group membership is bound to organization membership, like a team membership.
+///
+/// `group_members` referenced `accounts(id)`, so removing somebody from an organization left
+/// their project group memberships behind, and a grant to that group still reached them. The
+/// old `groups.rs` said as much: the rule was checked in a handler "because the group table has
+/// no organization column to hang a composite foreign key from". This adds the column, so the
+/// rule is enforced by the database on the way in AND on the way out — removing an
+/// organization member now cascades their group memberships away.
+///
+/// The backfill inner-joins `org_members`, which drops any existing row whose account is no
+/// longer an organization member. Those are exactly the stale memberships being eliminated, and
+/// dropping them is what lets the constraint hold; keeping them would fail the migration.
+const M6: &str = "
+CREATE TABLE group_members_bound (
+  group_id   TEXT    NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  org_id     TEXT    NOT NULL,
+  account_id TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (group_id, account_id),
+  FOREIGN KEY (org_id, account_id)
+    REFERENCES org_members(org_id, account_id) ON DELETE CASCADE
+);
+INSERT INTO group_members_bound(group_id, org_id, account_id, created_at)
+  SELECT gm.group_id, p.org_id, gm.account_id, gm.created_at
+    FROM group_members gm
+    JOIN groups g ON g.id = gm.group_id
+    JOIN projects p ON p.id = g.project_id
+    JOIN org_members om ON om.org_id = p.org_id AND om.account_id = gm.account_id;
+DROP TABLE group_members;
+ALTER TABLE group_members_bound RENAME TO group_members;
+";
+
 /// The ordered migration ledger: `(version, name, sql)`.
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "accounts_sessions_tenants", M1),
@@ -258,6 +290,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (3, "projects_envs_groups_pubkeys_grants", M3),
     (4, "variables", M4),
     (5, "grant_wraps_per_env_epoch", M5),
+    (6, "group_members_bound_to_org", M6),
 ];
 
 /// Apply every migration not yet recorded, in version order.

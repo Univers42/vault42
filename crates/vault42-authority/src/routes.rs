@@ -23,9 +23,9 @@ use crate::app::App;
 use crate::auth::handlers as auth;
 use crate::contract;
 use crate::handlers::{
-    environments, grants, groups, invites, orgs, projects, pubkeys, teams, variables,
+    environments, grants, groups, invites, offboard, orgs, projects, pubkeys, teams, variables,
 };
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use std::sync::Arc;
 
@@ -52,6 +52,7 @@ fn auth_routes() -> Router<Arc<App>> {
         .route("/v1/auth/logout", post(auth::logout))
         .route("/v1/auth/me", get(auth::me))
         .route("/v1/auth/passwd", post(auth::passwd))
+        .route("/v1/auth/account", delete(offboard::account))
 }
 
 /// Organization and team routes.
@@ -60,9 +61,14 @@ fn org_routes() -> Router<Arc<App>> {
         .route("/v1/orgs", post(orgs::create))
         .route("/v1/orgs/:org", get(orgs::show))
         .route("/v1/orgs/:org/members", get(orgs::members))
+        .route("/v1/orgs/:org/members/:user", delete(offboard::org_member))
         .route("/v1/orgs/:org/invites", post(orgs::invite))
         .route("/v1/orgs/:org/teams", post(teams::create).get(teams::list))
         .route("/v1/orgs/:org/teams/:team/members", post(teams::add_member))
+        .route(
+            "/v1/orgs/:org/teams/:team/members/:user",
+            delete(offboard::team_member),
+        )
         .route("/v1/orgs/:org/teams/:team/invites", post(teams::invite))
 }
 
@@ -83,6 +89,10 @@ fn project_routes() -> Router<Arc<App>> {
         )
         .route("/v1/projects/:project/groups", post(groups::create))
         .route("/v1/groups/:group/members", post(groups::add_member))
+        .route(
+            "/v1/groups/:group/members/:user",
+            delete(offboard::group_member),
+        )
         .route("/v1/groups/:group/invites", post(groups::invite))
         .route(
             "/v1/orgs/:org/pubkey",
@@ -105,6 +115,10 @@ fn grant_routes() -> Router<Arc<App>> {
         .route(
             "/v1/orgs/:org/projects/:project/grants/:grant/wraps",
             post(grants::add_wrap),
+        )
+        .route(
+            "/v1/orgs/:org/projects/:project/grants/:grant",
+            delete(offboard::grant),
         )
 }
 

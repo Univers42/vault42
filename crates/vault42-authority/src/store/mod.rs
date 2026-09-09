@@ -25,6 +25,7 @@ mod grants;
 mod groups;
 mod invites;
 mod migrate;
+mod offboard;
 mod orgs;
 mod projects;
 mod pubkeys;
@@ -32,9 +33,10 @@ mod sessions;
 mod teams;
 mod tenants;
 mod variables;
+mod wraps;
 
 pub use environments::{Environment, NewEnvironment};
-pub use grants::{NewGrant, WrapScope};
+pub use grants::NewGrant;
 pub use groups::NewGroup;
 pub use invites::{Acceptance, NewInvite};
 pub use orgs::NewOrg;
@@ -42,6 +44,7 @@ pub use projects::NewProject;
 pub use pubkeys::MemberPubkey;
 pub use teams::{NewTeam, NewTeamMember};
 pub use variables::{ResolveScopes, UpsertVariable, Variable};
+pub use wraps::WrapScope;
 
 use crate::error::{Error, Result};
 use r2d2::Pool;
@@ -98,4 +101,31 @@ pub(crate) fn is_constraint_violation(error: &rusqlite::Error) -> bool {
         rusqlite::Error::SqliteFailure(inner, _)
             if inner.code == rusqlite::ErrorCode::ConstraintViolation
     )
+}
+
+/// Refuse unless the account is already a member of the organization.
+///
+/// The rule the user stated: somebody joins a team or a group only after being added to the
+/// organization. `team_members` and `group_members` both enforce it in the database through a
+/// composite foreign key onto `org_members`; this gives the insert path a named error instead
+/// of an opaque constraint failure.
+pub(crate) fn require_org_membership(
+    conn: &rusqlite::Connection,
+    org_id: &str,
+    account_id: &str,
+) -> Result<()> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM org_members WHERE org_id=?1 AND account_id=?2",
+            rusqlite::params![org_id, account_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| Error::Internal(e.into()))?;
+    if count == 0 {
+        return Err(Error::BadRequest(
+            "account is not a member of the organization; add them to the organization first"
+                .into(),
+        ));
+    }
+    Ok(())
 }

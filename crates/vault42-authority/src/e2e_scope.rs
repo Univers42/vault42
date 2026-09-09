@@ -33,7 +33,7 @@ fn b64(raw: &[u8]) -> String {
 }
 
 /// A PUT carrying a bearer token and a JSON body.
-fn put_as(path: &str, token: &str, body: Value) -> Request<Body> {
+pub(crate) fn put_as(path: &str, token: &str, body: Value) -> Request<Body> {
     Request::builder()
         .method("PUT")
         .uri(path)
@@ -63,7 +63,7 @@ pub(crate) async fn founder(
 }
 
 /// Build a pubkey registration body, signing the proof over `signed_org`.
-fn pubkey_body(identity: &Identity, account_id: &str, signed_org: &str) -> Value {
+pub(crate) fn pubkey_body(identity: &Identity, account_id: &str, signed_org: &str) -> Value {
     let x25519 = b64(&identity.encryption_public().to_bytes());
     let ed25519 = b64(&identity.author_public().to_bytes());
     let sig = sign_request(

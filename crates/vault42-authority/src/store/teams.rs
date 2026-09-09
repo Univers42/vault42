@@ -114,7 +114,7 @@ impl Store {
     pub async fn add_team_member(&self, add: NewTeamMember) -> Result<()> {
         let now = vault42_contract::signing::now_unix();
         self.call(move |conn| {
-            require_org_membership(conn, &add.org_id, &add.account_id)?;
+            super::require_org_membership(conn, &add.org_id, &add.account_id)?;
             conn.execute(
                 "INSERT INTO team_members(team_id, org_id, account_id, team_role, created_at)
                  VALUES(?1,?2,?3,?4,?5)
@@ -132,26 +132,4 @@ impl Store {
         })
         .await
     }
-}
-
-/// Refuse unless the account is already an organization member.
-fn require_org_membership(
-    conn: &rusqlite::Connection,
-    org_id: &str,
-    account_id: &str,
-) -> Result<()> {
-    let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM org_members WHERE org_id=?1 AND account_id=?2",
-            params![org_id, account_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| Error::Internal(e.into()))?;
-    if count == 0 {
-        return Err(Error::BadRequest(
-            "account is not a member of the organization; add them to the organization first"
-                .into(),
-        ));
-    }
-    Ok(())
 }

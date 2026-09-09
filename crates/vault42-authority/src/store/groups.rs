@@ -13,8 +13,10 @@
 //! Project groups.
 //!
 //! A group is a project-scoped bag of accounts, used to hand a grant to several people at
-//! once. Membership requires belonging to the project's organization, checked here because
-//! the group table has no organization column to hang a composite foreign key from.
+//! once. Membership requires belonging to the project's organization, and since M6 the table
+//! carries `org_id` so a composite foreign key onto `org_members` enforces that rule in both
+//! directions: an outsider cannot be added, and a member removed from the organization has
+//! their group memberships cascaded away rather than left behind for a grant to reach.
 
 use super::{is_constraint_violation, Store};
 use crate::error::{Error, Result};
@@ -70,23 +72,11 @@ impl Store {
     ) -> Result<()> {
         let now = vault42_contract::signing::now_unix();
         self.call(move |conn| {
-            let member: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM org_members WHERE org_id=?1 AND account_id=?2",
-                    params![org_id, account_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| Error::Internal(e.into()))?;
-            if member == 0 {
-                return Err(Error::BadRequest(
-                    "account is not a member of the organization; add them to the organization first"
-                        .into(),
-                ));
-            }
+            super::require_org_membership(conn, &org_id, &account_id)?;
             conn.execute(
-                "INSERT OR IGNORE INTO group_members(group_id, account_id, created_at)
-                 VALUES(?1,?2,?3)",
-                params![group_id, account_id, now],
+                "INSERT OR IGNORE INTO group_members(group_id, org_id, account_id, created_at)
+                 VALUES(?1,?2,?3,?4)",
+                params![group_id, org_id, account_id, now],
             )
             .map_err(|error| {
                 if is_constraint_violation(&error) {

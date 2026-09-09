@@ -34,7 +34,7 @@ use vault42_contract::authority::Authority;
 use vault42_contract::signing::now_unix;
 
 /// A credible password that clears the length rule.
-const PASSWORD: &str = "correct horse battery staple";
+pub(crate) const PASSWORD: &str = "correct horse battery staple";
 
 /// Build an app over a fresh temporary database, optionally behind an invite token.
 pub(crate) fn fresh_app(tag: &str, register_token: Option<&str>) -> Arc<App> {

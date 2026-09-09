@@ -16,6 +16,7 @@ pub mod environments;
 pub mod grants;
 pub mod groups;
 pub mod invites;
+pub mod offboard;
 pub mod orgs;
 pub mod projects;
 pub mod pubkeys;

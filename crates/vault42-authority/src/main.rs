@@ -28,6 +28,8 @@ mod contract;
 #[cfg(test)]
 mod e2e;
 #[cfg(test)]
+mod e2e_offboard;
+#[cfg(test)]
 mod e2e_orgs;
 #[cfg(test)]
 mod e2e_scope;
