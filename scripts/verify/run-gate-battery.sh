@@ -71,51 +71,73 @@ select_gates() {
 	esac
 }
 
-# Run a gate, buffering output so a SKIP can be promoted to a failure under --strict.
-run_strict() {
+# Run a gate and report 0 pass, 1 fail, 2 skipped.
+#
+# Output is buffered in both modes so a SKIP can be SEEN in both. It used to stream unless
+# --strict was set, which meant a non-strict run could not tell a skip from a pass and reported
+# every gate as passing. With a missing toolchain image that produced "ALL 11 GATES PASS" having
+# executed nothing at all — the exact false green --strict exists to prevent, printed by the
+# summary line that was supposed to be reassuring.
+run_and_classify() {
 	log=$(mktemp) || return 1
-	if sh "$here/$1.sh" >"$log" 2>&1; then
+	if ! sh "$here/$1.sh" >"$log" 2>&1; then
 		cat "$log"
-		if grep -q '^SKIP' "$log"; then
-			rm -f "$log"
-			printf 'STRICT: %s skipped — counted as FAILURE\n' "$1" >&2
-			return 1
-		fi
 		rm -f "$log"
-		return 0
+		return 1
 	fi
 	cat "$log"
+	if grep -q '^SKIP' "$log"; then
+		rm -f "$log"
+		return 2
+	fi
 	rm -f "$log"
-	return 1
+	return 0
 }
 
-# Run one gate by bare name. Streams live unless --strict needs the output buffered.
+# Run one gate by bare name. Under --strict a skip becomes a failure.
 run_one() {
 	if [ ! -f "$here/$1.sh" ]; then
 		printf 'MISSING gate: %s\n' "$1" >&2
 		return 1
 	fi
 	printf '\n=== %s ===\n' "$1"
-	if [ "$STRICT" -eq 0 ]; then
-		if sh "$here/$1.sh"; then return 0; else return 1; fi
+	if run_and_classify "$1"; then outcome=0; else outcome=$?; fi
+	if [ "$outcome" -eq 2 ] && [ "$STRICT" -eq 1 ]; then
+		printf 'STRICT: %s skipped — counted as FAILURE\n' "$1" >&2
+		return 1
 	fi
-	run_strict "$1"
+	return "$outcome"
 }
 
-# Run every gate in the list, fail-fast, and report how many actually ran.
+# Run every gate in the list, fail-fast, and report what actually ran versus skipped.
 run_battery() {
 	ran=0
+	skipped=0
 	for gate in $1; do
-		run_one "$gate" || {
+		if run_one "$gate"; then outcome=0; else outcome=$?; fi
+		case "$outcome" in
+		0) ran=$((ran + 1)) ;;
+		2) skipped=$((skipped + 1)) ;;
+		*)
 			printf '\nGATE FAILED: %s\n' "$gate" >&2
 			exit 1
-		}
-		ran=$((ran + 1))
+			;;
+		esac
 	done
+	report_totals "$ran" "$skipped"
+}
+
+# Say what ran. A count of gates that skipped is never folded into the count that passed.
+report_totals() {
+	if [ "$2" -gt 0 ]; then
+		printf '\n%d GATES PASS, %d SKIPPED (prerequisites absent — this is NOT a green run;\n' "$1" "$2"
+		printf 'pass --strict to make a skip a failure, which is what CI does)\n'
+		return 0
+	fi
 	if [ "$STRICT" -eq 1 ]; then
-		printf '\nALL %d GATES PASS (strict: no skips)\n' "$ran"
+		printf '\nALL %d GATES PASS (strict: no skips)\n' "$1"
 	else
-		printf '\nALL %d GATES PASS\n' "$ran"
+		printf '\nALL %d GATES PASS\n' "$1"
 	fi
 }
 

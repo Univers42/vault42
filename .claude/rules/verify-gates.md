@@ -9,7 +9,12 @@ Every rule here was written by a gate that lied. They are in the order they were
 named. Eleven gates pass under `--all --strict` today: v01, v12, v16-v21, v25-v27.
 
 **Gates SKIP rather than fail when a prerequisite is missing**, so a fresh machine would report
-success having run nothing. Pass `--strict` to turn any SKIP into a failure; CI must use it. Gates
+success having run nothing. Pass `--strict` to turn any SKIP into a failure; CI must use it.
+Both directions are proved rather than assumed: with a missing toolchain image, `--all` reports
+`0 GATES PASS, 11 SKIPPED` and `--all --strict` exits 1 on the first gate. Re-run that pair after
+touching the runner. It used to print `ALL 11 GATES PASS` in that state, because output streamed
+unbuffered without `--strict` so a skip was indistinguishable from a pass — the exact false green
+the flag exists to prevent, printed by the summary meant to reassure you. Gates
 are invoked with `sh`, and `/bin/sh` is bash on this box, so test a new gate under `dash` before
 trusting it.
 
