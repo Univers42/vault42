@@ -1,0 +1,45 @@
+[package]
+name = "vault42-authority"
+description = "vault42 authority — accounts, organizations, teams, RBAC and contract issuance; the standalone replacement for the grobase control plane"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "vault42-authority"
+path = "src/main.rs"
+
+[dependencies]
+vault42-core = { path = "../vault42-core" }
+vault42-contract = { path = "../vault42-contract" }
+axum.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+r2d2.workspace = true
+r2d2_sqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+argon2.workspace = true
+blake3.workspace = true
+uuid.workspace = true
+base64.workspace = true
+hex.workspace = true
+zeroize.workspace = true
+rand_core = { version = "0.6", features = ["getrandom"] }
+# constant-time comparison for the shared register token
+subtle = "2"
+
+[dev-dependencies]
+# `oneshot` drives the router in-process, so the route battery needs no network and no
+# port allocation — the same reason vault42-server's e2e battery binds 127.0.0.1:0.
+tower = { version = "0.5", features = ["util"] }

@@ -21,7 +21,7 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # The per-PR subset: gates needing only docker plus the toolchain image, no container
 # spin-up and no readiness polling. Register a new fast gate here explicitly — the list
 # is deliberately manual so a slow gate cannot creep into the PR path by naming alone.
-FAST_GATES="v01-server-e2e"
+FAST_GATES="v01-server-e2e v16-authority-auth"
 
 STRICT=0
 MODE=""

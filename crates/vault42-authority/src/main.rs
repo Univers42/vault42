@@ -10,16 +10,34 @@
 /*                                                                            */
 /* ************************************************************************** */
 
-//! vault42-contract — the contract authority (the nano grobase peer). It registers
-//! tenants and issues Ed25519-signed contracts, then idles: vault42 verifies contracts
-//! offline, so this service does no per-request work and scales to zero (~free). It owns
-//! only tenant metadata + the signing key; it never sees a secret or a plaintext.
+//! vault42-authority — accounts, organizations, teams, RBAC, and contract issuance.
+//!
+//! This is the standalone replacement for the grobase control plane. vault42 must own its
+//! own business model: the grobase stack cannot run inside the fly.io budget it is meant
+//! to protect, so every identity and permission decision moves here, behind one small
+//! binary over embedded SQLite that scales to zero.
+//!
+//! It holds accounts, sessions, and the contract signing key. It never holds a secret's
+//! plaintext, and it is off vault42's per-request path: a contract is signed once and
+//! verified offline thereafter.
 
+mod app;
+mod auth;
+mod config;
+mod contract;
+#[cfg(test)]
+mod e2e;
+mod error;
+mod routes;
+mod store;
+mod validate;
+
+use app::App;
+use config::Config;
 use std::process::ExitCode;
 use std::sync::Arc;
-use vault42_contract::config::Config;
-use vault42_contract::routes::{router, App};
-use vault42_contract::{authority, store};
+use vault42_contract::authority::Authority;
+use vault42_contract::signing::now_unix;
 
 /// Entry point: init tracing, then run the authority.
 fn main() -> ExitCode {
@@ -29,7 +47,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("vault42-contract: {error}");
+            eprintln!("vault42-authority: {error}");
             ExitCode::FAILURE
         }
     }
@@ -44,23 +62,27 @@ fn run() -> anyhow::Result<()> {
     runtime.block_on(serve(cfg))
 }
 
-/// Open the registry, load the signing key, and serve the HTTP authority.
+/// Open the database, load the signing key, and serve HTTP.
 async fn serve(cfg: Config) -> anyhow::Result<()> {
-    let store = store::Store::open(&cfg.db_path)?;
-    let authority = authority::Authority::load(&cfg)?;
+    let store = store::Store::open(&cfg.db_path, now_unix())?;
+    let authority = Authority::open(
+        cfg.seed_hex.as_deref(),
+        &cfg.key_path,
+        cfg.contract_ttl_days,
+    )?;
     tracing::info!(
         public_key = %authority.public_hex(),
         bind = %cfg.bind,
-        "vault42-contract authority up — set public_key as vault42 VAULT42_CONTRACT_PUBKEY"
+        invite_gate = cfg.register_token.is_some(),
+        "vault42-authority up — set public_key as vault42 VAULT42_CONTRACT_PUBKEY"
     );
     let app = Arc::new(App {
-        authority,
         store,
+        authority,
+        session_ttl_secs: cfg.session_ttl_secs,
         register_token: cfg.register_token,
-        require_otp: cfg.require_otp,
-        otp_jwt_secret: cfg.otp_jwt_secret,
     });
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
-    axum::serve(listener, router(app)).await?;
+    axum::serve(listener, routes::router(app)).await?;
     Ok(())
 }

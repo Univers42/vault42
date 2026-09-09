@@ -11,6 +11,10 @@ publish = false
 [lints]
 workspace = true
 
+[lib]
+name = "vault42_contract"
+path = "src/lib.rs"
+
 [[bin]]
 name = "vault42-contract"
 path = "src/main.rs"

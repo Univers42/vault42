@@ -20,7 +20,7 @@ use rand_core::OsRng;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Reconstruct a signing key from a 32-byte hex seed.
-pub(crate) fn from_hex_seed(hex_seed: &str) -> anyhow::Result<SigningKey> {
+pub fn from_hex_seed(hex_seed: &str) -> anyhow::Result<SigningKey> {
     let bytes = hex::decode(hex_seed.trim())?;
     let seed: [u8; 32] = bytes
         .as_slice()
@@ -30,7 +30,7 @@ pub(crate) fn from_hex_seed(hex_seed: &str) -> anyhow::Result<SigningKey> {
 }
 
 /// Load the signing key from `path`, or generate one and persist it there.
-pub(crate) fn load_or_create(path: &str) -> anyhow::Result<SigningKey> {
+pub fn load_or_create(path: &str) -> anyhow::Result<SigningKey> {
     if let Ok(hex_seed) = std::fs::read_to_string(path) {
         return from_hex_seed(&hex_seed);
     }
@@ -51,7 +51,7 @@ fn persist(path: &str, seed: &[u8; 32]) -> anyhow::Result<()> {
 }
 
 /// Current Unix time in seconds — the contract issue/expiry clock.
-pub(crate) fn now_unix() -> i64 {
+pub fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
