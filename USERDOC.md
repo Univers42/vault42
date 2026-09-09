@@ -63,6 +63,15 @@ vault). Ask the operator for it; they set it with `fly secrets set VAULT42_REGIS
 
 ## 3. Install the CLI
 
+> **Two CLIs, one vault.** This guide documents the **`vault42`** binary — the *granular,
+> per-secret* tool (`set`/`get`/`share`/`rotate`). There is also **`42ctl`** — the *umbrella*
+> CLI built on the same vault that adds a **project workflow**: it pushes/pulls your whole
+> `*.env` tree at once (`42ctl push --project <name>` / `pull --apply`), logs in by **email
+> OTP**, and manages multi-device key escrow. For day-to-day "sync my project's secrets," use
+> `42ctl` (run `42ctl --help` for its complete how-to); for surgical single-secret operations
+> and sharing, use `vault42` as below. Both encrypt locally and store opaque blobs in the same
+> vault42 server.
+
 The CLI is a single Rust binary named `vault42`.
 
 **From source (needs a Rust toolchain + a C compiler):**
@@ -298,6 +307,28 @@ $FLY deploy --remote-only --ha=false --yes        # uses ./fly.toml
 `VAULT42_AUTH_SKEW_SECS` (120), `VAULT42_MAX_SECRETS` (per-owner cap; 0 = unlimited, prod uses 1000),
 `VAULT42_CONTRACT_PUBKEY` (hex; setting it turns the contract gate **on**). gRPC needs HTTP/2 to the
 app — fly.toml sets `[http_service.http_options] h2_backend = true`.
+
+#### Storage backend: SQLite (default) vs **GrobaseStore** (production)
+
+By default the server keeps the opaque-envelope store in a local SQLite file (`VAULT42_DB`). For
+production it can instead **delegate storage to a grobase backend** — so grobase owns the Postgres
+database (ACID, WAL, backups) and vault42 is the zero-knowledge *motor* on top. This is how the live
+`vault42.fly.dev` runs. The server auto-selects GrobaseStore when `VAULT42_STORE != sqlite` and all of
+these are set (else it falls back to SQLite):
+
+| Var | Meaning |
+|---|---|
+| `VAULT42_STORE` | set to `grobase` to select the grobase backend |
+| `GROBASE_QUERY_URL` | grobase Kong base, e.g. `https://grobase-stack.fly.dev` (`/query/v1`) |
+| `GROBASE_ANON_KEY` | grobase anon apikey (Kong key-auth) |
+| `GROBASE_APP_KEY` | a least-privilege scoped key (`mbk_…`) for the vault42 mount |
+| `GROBASE_DB_ID` | the vault42 Postgres mount id in grobase |
+| `JWT_SECRET` | = grobase's `GOTRUE_JWT_SECRET`; the server mints a per-owner HS256 JWT (sub = uuid5(principal)) so grobase owner-scopes each `/query/v1` write |
+
+The grobase side stores each envelope as base64 **TEXT** in `public.vault42_secrets`, owner-scoped per
+request (mount `read_scoped=true`). The server still never holds a key or a plaintext — grobase only
+ever sees the opaque blob + the owner id. Provision the vault42 mount + emit these values with grobase's
+generic contract provisioner: `bash scripts/provision-contract.sh infra/config/contracts/vault42.json`.
 
 **Authority env** (`grobase-nano`): `VAULT42_CONTRACT_PORT` (8443), `VAULT42_CONTRACT_DB`,
 `VAULT42_CONTRACT_KEY` (the signing key, persisted on the volume), `VAULT42_CONTRACT_TTL_DAYS` (365),

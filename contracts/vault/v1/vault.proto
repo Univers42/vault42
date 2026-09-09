@@ -18,6 +18,25 @@ service Vault {
   rpc Audit(AuditRequest) returns (stream AuditEvent);
   rpc Unseal(UnsealRequest) returns (UnsealResponse);
   rpc Whoami(WhoamiRequest) returns (WhoamiResponse);
+  // Scope-key surface (KEK hierarchy) — gated OFF by default (VAULT42_SCOPE_KEYS_ENABLED);
+  // when off the server returns UNIMPLEMENTED so the wire stays byte-parity.
+  rpc WrapScopeKey(WrapScopeKeyRequest) returns (WrapScopeKeyResponse);
+  rpc GetScopeKey(GetScopeKeyRequest) returns (GetScopeKeyResponse);
+  rpc ListScopeMembers(ListScopeMembersRequest) returns (ListScopeMembersResponse);
+  rpc RotateScope(RotateScopeRequest) returns (RotateScopeResponse);
+  // Shared env-secret store (same flag gate as the scope-key surface). An env secret is
+  // sealed CLIENT-SIDE to the scope's X25519 PUBLIC key, stored ONCE per
+  // (scope_id, epoch, path, version) — NOT owner-scoped — and readable by ANY
+  // authenticated caller: the seal IS the access control (only a scope-private-key
+  // holder can decrypt). This is the storage a provisioned member reads to obtain a
+  // shared env secret.
+  rpc PutEnvSecret(PutEnvSecretRequest) returns (PutEnvSecretResponse);
+  rpc GetEnvSecret(GetEnvSecretRequest) returns (GetEnvSecretResponse);
+  // Enumerate an environment's secret paths (latest version each) so an admin's
+  // rotate-scope can re-seal every secret of a (scope_id, epoch). Returns only path +
+  // version (no envelope): any authenticated caller may list paths; the seal still gates
+  // decryption. Same flag gate as the other scope RPCs.
+  rpc ListEnvSecrets(ListEnvSecretsRequest) returns (ListEnvSecretsResponse);
 }
 
 // expected_prev_rev gives optimistic concurrency: the server writes only if the
@@ -104,3 +123,95 @@ message WhoamiResponse {
   repeated string roles = 2;
   uint32 aal = 3;
 }
+
+// A granting admin deposits a member's wrapped scope private key. `granted_blob` is the
+// OPAQUE serialized vault42-core GrantedScopeKey (base64-free on the wire; raw bytes); the
+// server verifies the granter signature over it WITHOUT decrypting, then stores it under
+// `member_id` — a FOREIGN-owner deposit (like Share). `member_id`/`scope_id` are the
+// storage owner key (the member's hex principal) and the scope identity. `granter_pubkey`
+// is the granter's 32-byte Ed25519 key the server verifies the grant signature against.
+message WrapScopeKeyRequest {
+  string member_id = 1;
+  string scope_id = 2;
+  uint32 epoch = 3;
+  bytes granted_blob = 4;
+  bytes granter_pubkey = 5;
+}
+message WrapScopeKeyResponse { bool stored = 1; }
+
+// A member fetches THEIR OWN wrapped scope key (owner = caller). The server scopes the
+// read to the caller, so a member can never read another member's wrap.
+message GetScopeKeyRequest {
+  string scope_id = 1;
+  uint32 epoch = 2;
+}
+message GetScopeKeyResponse {
+  bytes granted_blob = 1;
+  bytes granter_pubkey = 2;
+}
+
+// List the provisioned members of a scope/epoch — bounded to what the caller may see
+// (a member of the scope). Returns each member's storage id and when it was wrapped.
+message ListScopeMembersRequest {
+  string scope_id = 1;
+  uint32 epoch = 2;
+}
+message ScopeMember {
+  string member_id = 1;
+  int64 wrapped_at = 2;
+}
+message ListScopeMembersResponse { repeated ScopeMember members = 1; }
+
+// Forward-secure scope rotation. The caller has already re-sealed the scope's secrets to
+// a fresh scope keypair and re-wrapped the new scope key to the REMAINING members
+// client-side; `rewraps` carries one `WrapScopeKeyRequest` per remaining member, each
+// bound (granter signature + the request's `scope_id`/`epoch`) to `new_epoch`. The server
+// verifies every rewrap WITHOUT decrypting and persists them under `new_epoch`. A removed
+// member simply has no `new_epoch` wrap, so it can no longer reach the rotated secret —
+// forward secrecy by absence, not by deletion. Same flag gate as the other scope RPCs.
+message RotateScopeRequest {
+  string scope_id = 1;
+  uint32 new_epoch = 2;
+  repeated WrapScopeKeyRequest rewraps = 3;
+}
+message RotateScopeResponse { uint32 rewrapped = 1; }
+
+// Store one shared env secret. `envelope` is the OPAQUE serialized vault42-core Envelope,
+// sealed CLIENT-SIDE to the scope's X25519 public key; the server verifies the author
+// signature WITHOUT decrypting, then appends the next version under (scope_id, epoch, path).
+// `expected_prev_rev` is optimistic concurrency: the stored head version must match (0 =
+// create), else the write is rejected. The row is NOT owner-scoped — the seal is the gate.
+message PutEnvSecretRequest {
+  string scope_id = 1;
+  uint32 epoch = 2;
+  string path = 3;
+  bytes envelope = 4;
+  uint64 expected_prev_rev = 5;
+}
+message PutEnvSecretResponse { uint64 version = 1; }
+
+// Fetch one shared env secret version (0 = latest) for (scope_id, epoch, path). The server
+// returns the opaque envelope to ANY authenticated caller; only a holder of the scope
+// private key can decrypt it. `author_pubkey` lets the reader verify authorship.
+message GetEnvSecretRequest {
+  string scope_id = 1;
+  uint32 epoch = 2;
+  string path = 3;
+  uint64 version = 4;
+}
+message GetEnvSecretResponse {
+  bytes envelope = 1;
+  uint64 version = 2;
+  bytes author_pubkey = 3;
+}
+
+// List every env-secret path of a (scope_id, epoch), each at its latest version.
+message ListEnvSecretsRequest {
+  string scope_id = 1;
+  uint32 epoch = 2;
+}
+message EnvSecretEntry {
+  string path = 1;
+  uint64 version = 2;
+}
+message ListEnvSecretsResponse { repeated EnvSecretEntry entries = 1; }

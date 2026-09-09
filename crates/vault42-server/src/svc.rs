@@ -30,11 +30,13 @@ pub struct VaultSvc {
     pub(crate) skew_secs: i64,
     pub(crate) grobase: Option<Arc<GrobaseClient>>,
     pub(crate) contract_pub: Option<[u8; 32]>,
+    pub(crate) scope_keys_enabled: bool,
 }
 
 impl VaultSvc {
     /// Build the service from its injected dependencies. `contract_pub`, when set, makes
-    /// every request require a valid authority contract (managed multi-tenancy).
+    /// every request require a valid authority contract (managed multi-tenancy). The
+    /// scope-key surface is OFF by default (`with_scope_keys` flips it on, flag-gated).
     pub fn new(
         store: Arc<dyn SecretStore>,
         skew_secs: i64,
@@ -46,7 +48,15 @@ impl VaultSvc {
             skew_secs,
             grobase: grobase.map(Arc::new),
             contract_pub,
+            scope_keys_enabled: false,
         }
+    }
+
+    /// Enable (or leave disabled) the scope-key RPCs. OFF keeps the wire byte-parity:
+    /// the scope-key RPCs return UNIMPLEMENTED until a deployment flips the flag on.
+    pub fn with_scope_keys(mut self, enabled: bool) -> Self {
+        self.scope_keys_enabled = enabled;
+        self
     }
 
     /// Record an operation in the local audit chain (and grobase's, when wired). A

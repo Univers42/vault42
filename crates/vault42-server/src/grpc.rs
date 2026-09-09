@@ -24,9 +24,13 @@ use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 use vault42_proto::vault::v1::vault_server::Vault;
 use vault42_proto::vault::v1::{
-    unseal_response, AuditRequest, Chunk, GetRequest, GetResponse, LsRequest, LsResponse,
-    PushRequest, PushResponse, RmRequest, RmResponse, RotateKeysRequest, RotateKeysResponse,
+    unseal_response, AuditRequest, Chunk, GetEnvSecretRequest, GetEnvSecretResponse, GetRequest,
+    GetResponse, GetScopeKeyRequest, GetScopeKeyResponse, ListEnvSecretsRequest,
+    ListEnvSecretsResponse, ListScopeMembersRequest, ListScopeMembersResponse, LsRequest,
+    LsResponse, PushRequest, PushResponse, PutEnvSecretRequest, PutEnvSecretResponse, RmRequest,
+    RmResponse, RotateKeysRequest, RotateKeysResponse, RotateScopeRequest, RotateScopeResponse,
     ShareRequest, UnsealRequest, UnsealResponse, WhoamiRequest, WhoamiResponse,
+    WrapScopeKeyRequest, WrapScopeKeyResponse,
 };
 
 type ChunkStream = Pin<Box<dyn Stream<Item = Result<Chunk, Status>> + Send>>;
@@ -210,5 +214,93 @@ impl Vault for VaultSvc {
             self.contract_pub.as_ref(),
         )?;
         Ok(Response::new(self.op_whoami(&caller)))
+    }
+
+    async fn wrap_scope_key(
+        &self,
+        request: Request<WrapScopeKeyRequest>,
+    ) -> Result<Response<WrapScopeKeyResponse>, Status> {
+        let caller = self.authn_scope(request.metadata(), "/vault.v1.Vault/WrapScopeKey")?;
+        self.op_wrap_scope_key(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_scope_key(
+        &self,
+        request: Request<GetScopeKeyRequest>,
+    ) -> Result<Response<GetScopeKeyResponse>, Status> {
+        let caller = self.authn_scope(request.metadata(), "/vault.v1.Vault/GetScopeKey")?;
+        let r = request.into_inner();
+        self.op_get_scope_key(&caller, &r.scope_id, r.epoch)
+            .await
+            .map(Response::new)
+    }
+
+    async fn list_scope_members(
+        &self,
+        request: Request<ListScopeMembersRequest>,
+    ) -> Result<Response<ListScopeMembersResponse>, Status> {
+        let caller = self.authn_scope(request.metadata(), "/vault.v1.Vault/ListScopeMembers")?;
+        let r = request.into_inner();
+        let members = self
+            .op_list_scope_members(&caller, &r.scope_id, r.epoch)
+            .await?;
+        Ok(Response::new(ListScopeMembersResponse { members }))
+    }
+
+    async fn rotate_scope(
+        &self,
+        request: Request<RotateScopeRequest>,
+    ) -> Result<Response<RotateScopeResponse>, Status> {
+        let caller = self.authn_scope(request.metadata(), "/vault.v1.Vault/RotateScope")?;
+        self.op_rotate_scope(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn put_env_secret(
+        &self,
+        request: Request<PutEnvSecretRequest>,
+    ) -> Result<Response<PutEnvSecretResponse>, Status> {
+        let caller = self.authn_scope(request.metadata(), "/vault.v1.Vault/PutEnvSecret")?;
+        self.op_put_env_secret(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn get_env_secret(
+        &self,
+        request: Request<GetEnvSecretRequest>,
+    ) -> Result<Response<GetEnvSecretResponse>, Status> {
+        let caller = self.authn_scope(request.metadata(), "/vault.v1.Vault/GetEnvSecret")?;
+        self.op_get_env_secret(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn list_env_secrets(
+        &self,
+        request: Request<ListEnvSecretsRequest>,
+    ) -> Result<Response<ListEnvSecretsResponse>, Status> {
+        let caller = self.authn_scope(request.metadata(), "/vault.v1.Vault/ListEnvSecrets")?;
+        self.op_list_env_secrets(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+}
+
+impl VaultSvc {
+    /// Gate-then-authenticate a scope-key RPC: when the feature flag is OFF, return
+    /// UNIMPLEMENTED so the wire stays byte-parity; otherwise authenticate as usual.
+    fn authn_scope(
+        &self,
+        meta: &tonic::metadata::MetadataMap,
+        method: &str,
+    ) -> Result<crate::principal::Principal, Status> {
+        if !self.scope_keys_enabled {
+            return Err(Status::unimplemented("scope-key surface disabled"));
+        }
+        authn(meta, method, self.skew_secs, self.contract_pub.as_ref())
     }
 }

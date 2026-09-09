@@ -63,6 +63,37 @@ can read another's data.
   the Shamir K-of-N split bound the blast radius. Until then, the operator's own (default-ON) tenant is
   explicitly **operator-escrowed, not zero-knowledge** (DECISIONS.md D5).
 
+### Org/team/group RBAC + per-environment scope keys (R12–R17)
+
+These cover the zero-knowledge per-environment secret model — control-plane authorization (grobase,
+flags `ORG_MODEL_ENABLED`/`RBAC_HIERARCHY_ENABLED`/`ENVIRONMENTS_ENABLED`/`GROUPS_ENABLED`/`INVITES_ENABLED`/`USER_PUBKEYS_ENABLED`,
+migrations 077–084) vs crypto-plane decryption (vault42, flag `VAULT42_SCOPE_KEYS_ENABLED`, RPCs
+`WrapScopeKey`/`GetScopeKey`/`ListScopeMembers`/`RotateScope`/`PutEnvSecret`/`GetEnvSecret`/`ListEnvSecrets`).
+All default OFF (a missing flag = byte-parity). Design: `grobase/wiki/architecture/org-team-group-rbac.md`.
+Proof: grobase gates m162/m166/m168/m170/m172, vault42 gates v14/v15, live `scripts/test/e2e-rbac-scope-keys-live.sh`.
+
+- **R12 Scope-key revocation is forward-secure only** — a removed member keeps anything already read
+  and may have cached the old scope key; only post-rotation revisions are protected. Mitigate: removal
+  ⇒ `42ctl vault rotate-scope` (new epoch, re-seal env secrets, re-wrap only to remaining members);
+  v15 proves a removed member is blocked on the new-epoch revision. Stated, not hidden.
+- **R13 Provisioning lag** — a grant is authorized the instant it is written but does not *decrypt*
+  until a key-holding admin runs `42ctl vault sync-keys` (only a key-holder can wrap the scope key, the
+  server cannot). Mitigate: the gap is surfaced as an explicit `pending-provision` state via
+  `42ctl vault scope-status` — never a silent failure.
+- **R14 An admin is the scope's decryption root** — a current scope admin can `WrapScopeKey` to any
+  registered pubkey, so a compromised/rogue admin can provision an attacker's key. Mitigate: the
+  `pubkey_sig` proof-of-possession on the registry (`082`), every wrap is audited, and
+  `42ctl vault scope-status` exposes a rogue granter.
+- **R15 Registry TOFU** — the first wrap trusts the member's pubkey as published in the user-pubkey
+  registry (`081`); a server that lies on first fetch can substitute a key. Mitigate: the self-signed
+  `pubkey_sig` and auditing pubkey changes; an out-of-band anchor is future work (same shape as R9).
+- **R16 Rotation cost** — `42ctl vault rotate-scope` re-seals *every* env secret to the new scope
+  public key, an O(secrets) operation. Mitigate: the rotation is idempotent + epoch-tagged, so a
+  partial rotation is detectable and re-runnable.
+- **R17 Recovery interaction** — scope keys are recovery-wrapped only under the *same* explicit
+  per-tenant opt-in as secrets (R1/R11), and audited; a scope key never silently inherits recovery
+  escrow.
+
 ## Accepted non-goals (documented, not solved)
 
 - A compromised client **with unlocked keys** can read that user's own secrets (mitigate: hardware
