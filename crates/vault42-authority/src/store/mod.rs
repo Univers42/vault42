@@ -19,6 +19,7 @@
 //! rules in the schema are enforced by the database rather than by handlers.
 
 mod accounts;
+mod authz;
 mod environments;
 mod grants;
 mod groups;
@@ -30,6 +31,7 @@ mod pubkeys;
 mod sessions;
 mod teams;
 mod tenants;
+mod variables;
 
 pub use environments::{Environment, NewEnvironment};
 pub use grants::NewGrant;
@@ -39,6 +41,7 @@ pub use orgs::NewOrg;
 pub use projects::NewProject;
 pub use pubkeys::MemberPubkey;
 pub use teams::{NewTeam, NewTeamMember};
+pub use variables::{ResolveScopes, UpsertVariable, Variable};
 
 use crate::error::{Error, Result};
 use r2d2::Pool;

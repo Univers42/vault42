@@ -22,7 +22,9 @@
 use crate::app::App;
 use crate::auth::handlers as auth;
 use crate::contract;
-use crate::handlers::{environments, grants, groups, invites, orgs, projects, pubkeys, teams};
+use crate::handlers::{
+    environments, grants, groups, invites, orgs, projects, pubkeys, teams, variables,
+};
 use axum::routing::{get, post};
 use axum::Router;
 use std::sync::Arc;
@@ -38,6 +40,7 @@ pub fn router(app: Arc<App>) -> Router {
         .merge(invite_routes())
         .merge(project_routes())
         .merge(grant_routes())
+        .merge(variable_routes())
         .with_state(app)
 }
 
@@ -102,6 +105,36 @@ fn grant_routes() -> Router<Arc<App>> {
         .route(
             "/v1/orgs/:org/projects/:project/grants/:grant/wraps",
             post(grants::add_wrap),
+        )
+}
+
+/// Variables at the three scope levels, plus the resolved view.
+fn variable_routes() -> Router<Arc<App>> {
+    Router::new()
+        .route("/v1/orgs/:org/variables", get(variables::org_list))
+        .route(
+            "/v1/orgs/:org/variables/:key",
+            axum::routing::put(variables::org_put).delete(variables::org_delete),
+        )
+        .route(
+            "/v1/projects/:project/variables",
+            get(variables::project_list),
+        )
+        .route(
+            "/v1/projects/:project/variables/:key",
+            axum::routing::put(variables::project_put).delete(variables::project_delete),
+        )
+        .route(
+            "/v1/projects/:project/environments/:env/variables",
+            get(variables::env_list),
+        )
+        .route(
+            "/v1/projects/:project/environments/:env/variables/:key",
+            axum::routing::put(variables::env_put).delete(variables::env_delete),
+        )
+        .route(
+            "/v1/projects/:project/environments/:env/resolve",
+            get(variables::resolve),
         )
 }
 
