@@ -42,6 +42,21 @@ primary_region = "cdg"
   [http_service.http_options]
     h2_backend = true
 
+# The server speaks gRPC and nothing else, so there is no HTTP path for fly to poll: an
+# unauthenticated request is answered with grpc-status 16, which is correct behaviour and not
+# something an HTTP check can read. Without any check at all, fly cannot tell a wedged process
+# from a healthy one — it keeps routing to a machine that has stopped serving, and a deploy that
+# released a broken image reports success. A TCP check on the gRPC port is the honest check for
+# this surface: it proves the process is up and accepting connections, which is exactly as much
+# as the protocol lets fly verify from outside.
+[checks]
+  [checks.grpc_port]
+    type = "tcp"
+    port = 8443
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
 [[vm]]
   size = "shared-cpu-1x"
   memory = "256mb"

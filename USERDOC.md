@@ -34,12 +34,12 @@ For the architecture decisions see [`DECISIONS.md`](DECISIONS.md); for the secur
 - **A secret is sealed locally** (XChaCha20-Poly1305 over a random data key; that key wrapped to your
   X25519 public key; the whole thing signed by your Ed25519 key) and uploaded as an **opaque blob**.
   The server stores bytes it cannot read.
-- **To use a hosted vault you register once** with a *contract authority* (`grobase-nano`), which
+- **To use a hosted vault you register once** with a *contract authority* (`vault42-authority`), which
   signs a **contract** binding your public key to a tenant name. The vault verifies that contract
   offline on every request. Think of the contract as your membership card; your keystore is the key.
 - **Two cooperating services** (the "duo"):
   - **vault42** — the data plane. Stores opaque secrets, owner-scoped to your key.
-  - **grobase-nano** — the contract authority. Issues contracts at registration, then idles.
+  - **vault42-authority** — the contract authority. Issues contracts at registration, then idles.
 
 You only ever run the **CLI**. The two services are remote.
 
@@ -286,51 +286,70 @@ The duo is two tiny apps. The cheapest shape is fly.io with both **scaled to zer
 deploy commands are in [`RUNBOOK.md`](RUNBOOK.md); the short version:
 
 ```sh
-TOK=$(grep '^FLY_TOKEN=' .env.local | cut -d= -f2- | tr -d '"')
-FLY="docker run --rm -e FLY_API_TOKEN=$TOK -v $PWD:/work -w /work flyio/flyctl:latest"
+export FLY_API_TOKEN="$(sed -n 's/^FLY_TOKEN=//p' ../.env)"
+FLY="docker run --rm -e FLY_API_TOKEN flyio/flyctl:v0.4.101"
+BUILD="-v /var/run/docker.sock:/var/run/docker.sock -v $PWD:/work -w /work"
 
-# 1. Authority
-$FLY apps create grobase-nano --org personal
-$FLY volumes create grobase_nano_data --app grobase-nano --region cdg --size 1 --yes
-$FLY secrets set VAULT42_REGISTER_TOKEN="$(openssl rand -hex 16)" --stage -a grobase-nano
-$FLY deploy --remote-only --ha=false --yes -c fly.contract.toml
+# 1. The authority. Deploy it FIRST: the server's contract key IS this app's public key,
+#    so releasing the server first pins it to a key that does not exist yet, and every
+#    request is then rejected by a server that looks perfectly healthy.
+$FLY apps create vault42-authority --org personal
+$FLY volumes create vault42_authority_data --app vault42-authority --region cdg --size 1 --yes
+$FLY secrets import --stage --app vault42-authority <<'EOF'
+MAIL_FROM=…
+MAIL_PASSWORD=…
+VAULT42_OTP_PROOF_SECRET=…
+VAULT42_REGISTER_TOKEN=…
+EOF
+docker run --rm -e FLY_API_TOKEN $BUILD flyio/flyctl:v0.4.101 \
+  deploy --config fly.authority.toml --app vault42-authority --local-only --ha=false --yes
 
-# 2. Wire the authority's public key into vault42, then deploy vault42
+# 2. Wire the authority's key into the server, then deploy the server.
+$FLY apps create vault42-server --org personal
+$FLY volumes create vault42_data --app vault42-server --region cdg --size 1 --yes
 KEY=$(curl -fsS https://vault42-authority.fly.dev/v1/contract-key | sed 's/.*"public_key":"//;s/".*//')
-$FLY apps create vault42 --org personal
-$FLY volumes create vault42_data --app vault42 --region cdg --size 1 --yes
-$FLY secrets set VAULT42_CONTRACT_PUBKEY="$KEY" --stage -a vault42
-$FLY deploy --remote-only --ha=false --yes        # uses ./fly.toml
+[ "${#KEY}" -eq 64 ] || { echo "refusing a ${#KEY}-char key"; exit 1; }
+printf 'VAULT42_CONTRACT_PUBKEY=%s\n' "$KEY" | $FLY secrets import --stage --app vault42-server
+docker run --rm -e FLY_API_TOKEN $BUILD flyio/flyctl:v0.4.101 \
+  deploy --config fly.toml --app vault42-server --local-only --ha=false --yes
 ```
 
-**Server env** (`vault42`): `VAULT42_PORT` (8443), `VAULT42_DB` (`/data/vault42.db`),
+The app is `vault42-server`, not `vault42`. Fly app names are unique across all of fly.io and
+`vault42` belongs to someone else, so it was never ours to deploy to.
+
+`--local-only` builds here and pushes the image; `--remote-only` would build on a fly remote
+builder, which is itself a billed machine. `--ha=false` creates one machine per app, where fly's
+default is two.
+
+Checking the key's length before storing it is not defensiveness for its own sake. Piping `curl`
+straight into `fly secrets set` writes an empty secret when the authority is briefly unreachable,
+and an empty key used to mean "standalone", which accepts any self-generated keypair.
+
+In practice you should not run any of this by hand. A push to `develop` that goes green in CI
+deploys both apps, smoke-tests them and stops the machines again; see the **deploy** workflow.
+
+**Server env** (`vault42-server`): `VAULT42_PORT` (8443), `VAULT42_DB` (`/data/vault42.db`),
 `VAULT42_AUTH_SKEW_SECS` (120), `VAULT42_MAX_SECRETS` (per-owner cap; 0 = unlimited, prod uses 1000),
+`VAULT42_SCOPE_KEYS_ENABLED` (without it every scope and environment RPC answers UNIMPLEMENTED),
 `VAULT42_CONTRACT_PUBKEY` (hex; setting it turns the contract gate **on**). gRPC needs HTTP/2 to the
 app — fly.toml sets `[http_service.http_options] h2_backend = true`.
 
-#### Storage backend: SQLite (default) vs **GrobaseStore** (production)
+#### Storage backend: SQLite
 
-By default the server keeps the opaque-envelope store in a local SQLite file (`VAULT42_DB`). For
-production it can instead **delegate storage to a grobase backend** — so grobase owns the Postgres
-database (ACID, WAL, backups) and vault42 is the zero-knowledge *motor* on top. This is how the live
-`vault42-server.fly.dev` runs. The server auto-selects GrobaseStore when `VAULT42_STORE != sqlite` and all of
-these are set (else it falls back to SQLite):
+The deployed server keeps the opaque-envelope store in a SQLite file on its encrypted volume
+(`VAULT42_DB`). That is what runs, and it is the only backend this product supports.
 
-| Var | Meaning |
-|---|---|
-| `VAULT42_STORE` | set to `grobase` to select the grobase backend |
-| `GROBASE_QUERY_URL` | grobase Kong base, e.g. `https://grobase-stack.fly.dev` (`/query/v1`) |
-| `GROBASE_ANON_KEY` | grobase anon apikey (Kong key-auth) |
-| `GROBASE_APP_KEY` | a least-privilege scoped key (`mbk_…`) for the vault42 mount |
-| `GROBASE_DB_ID` | the vault42 Postgres mount id in grobase |
-| `JWT_SECRET` | = grobase's `GOTRUE_JWT_SECRET`; the server mints a per-owner HS256 JWT (sub = uuid5(principal)) so grobase owner-scopes each `/query/v1` write |
+A grobase-backed store exists in the tree and is **not used**. It is off unless
+`VAULT42_STORE=grobase` is set exactly, and the exact opt-in is required because the two backends
+are not equivalent: SQLite serialises read-then-write through a one-connection pool so audit-chain
+links are atomic, while the grobase store does read-head-then-insert over HTTP, which is a real
+time-of-check-to-time-of-use race on the audit chain. It used to win whenever five environment
+variables happened to be set together, so a leftover deployment variable was enough to move the
+vault's data plane onto it silently, announced by nothing but a log line.
 
-The grobase side stores each envelope as base64 **TEXT** in `public.vault42_secrets`, owner-scoped per
-request (mount `read_scoped=true`). The server still never holds a key or a plaintext — grobase only
-ever sees the opaque blob + the owner id. Provision the vault42 mount + emit these values with grobase's
-generic contract provisioner: `bash scripts/provision-contract.sh infra/config/contracts/vault42.json`.
+An earlier version of this document said the live server ran on that backend. It never has.
 
-**Authority env** (`grobase-nano`): `VAULT42_CONTRACT_PORT` (8443), `VAULT42_CONTRACT_DB`,
+**Authority env** (`vault42-authority`): `VAULT42_CONTRACT_PORT` (8443), `VAULT42_CONTRACT_DB`,
 `VAULT42_CONTRACT_KEY` (the signing key, persisted on the volume), `VAULT42_CONTRACT_TTL_DAYS` (365),
 `VAULT42_REGISTER_TOKEN` (invite gate). Endpoints: `GET /healthz`, `GET /v1/contract-key`,
 `POST /v1/register {tenant, author_pubkey, token?}`.
