@@ -31,6 +31,15 @@
 # What it proves that a local run cannot: that the project survives the scale-to-zero cycle the
 # whole cost model rests on. It stops both machines cold between the push and the pull, so a
 # green here means the data outlived the machine that received it.
+#
+# WHAT IT CANNOT PROVE: anything about reading what an OLDER client wrote. It pushes with the
+# binary it just built and pulls with the same one, so every artefact it reads was written by the
+# version under test. No fixture written by an older binary exists anywhere in either repository,
+# which means the whole cross-version compatibility story rests on serde defaults that have never
+# been exercised against a real old artefact. That gap is not theoretical: a client without the
+# `chunked` field silently drops it, fetches the vault blob for a chunked path — which is the
+# chunk LIST, not the file — and writes those bytes to disk as the file, reporting success. A
+# green here says nothing about that, and it never will.
 set -eu
 
 AUTHORITY="${AUTHORITY_URL:-https://vault42-authority.fly.dev}"
