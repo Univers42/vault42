@@ -92,6 +92,38 @@ impl Store {
         .await
     }
 
+    /// Resolve a member reference (account id or email) to an account id, WITHIN `org_id`.
+    ///
+    /// Scoping to the organization is the security property, not a convenience. Resolving an
+    /// arbitrary address would answer "does this person have an account here" to anyone who
+    /// can reach the route, rebuilding by lookup the enumeration oracle signup was changed to
+    /// close (R24). Joined to `org_members`, it reveals only what `GET /v1/orgs/{org}/members`
+    /// already shows the administrator asking — a set they are entitled to.
+    ///
+    /// The caller normalizes the address first, because `accounts.email` is stored normalized
+    /// and a raw `Foo@Example.COM ` would otherwise miss a member that plainly exists.
+    pub async fn resolve_org_member(
+        &self,
+        org_id: String,
+        reference: String,
+    ) -> Result<Option<String>> {
+        self.call(move |conn| {
+            let found = conn.query_row(
+                "SELECT a.id FROM accounts a
+                   JOIN org_members m ON m.account_id = a.id
+                  WHERE m.org_id = ?1 AND (a.id = ?2 OR a.email = ?2)",
+                params![org_id, reference],
+                |row| row.get::<_, String>(0),
+            );
+            match found {
+                Ok(id) => Ok(Some(id)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(error) => Err(Error::Internal(error.into())),
+            }
+        })
+        .await
+    }
+
     /// Read one organization by id.
     pub async fn org_by_id(&self, org_id: String) -> Result<Option<Org>> {
         self.call(move |conn| {

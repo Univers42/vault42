@@ -577,3 +577,237 @@ async fn an_invite_is_readable_only_by_the_address_it_was_sent_to() {
         "only the invited address may read it"
     );
 }
+
+/// Create a project and one environment under `org`, returning `(project_id, env_id)`.
+async fn project_with_env(
+    app: &std::sync::Arc<crate::app::App>,
+    token: &str,
+    org: &str,
+) -> (String, String) {
+    let (status, body) = send(
+        app,
+        post_as(
+            &format!("/v1/orgs/{org}/projects"),
+            token,
+            json!({"slug": "api", "name": "API"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "project create: {body}");
+    let project = body["id"].as_str().expect("project id").to_string();
+    let (status, body) = send(
+        app,
+        post_as(
+            &format!("/v1/projects/{project}/environments"),
+            token,
+            json!({"name": "prod"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "env create: {body}");
+    let env = body["id"].as_str().expect("env id").to_string();
+    (project, env)
+}
+
+/// The account id behind a session token.
+async fn account_id(app: &std::sync::Arc<crate::app::App>, token: &str) -> String {
+    let (_, body) = send(app, get_with("/v1/auth/me", &format!("Bearer {token}"))).await;
+    body["account_id"].as_str().expect("account_id").to_string()
+}
+
+#[tokio::test]
+async fn a_grant_accepts_a_team_slug_an_email_and_an_env_name() {
+    let app = fresh_app("grantrefs", None);
+    let owner = signed_up(&app, "owner@example.com").await;
+    let member = signed_up(&app, "member@example.com").await;
+    let org = owned_org(&app, &owner, "acme").await;
+    joined(
+        &app,
+        (&org, &owner),
+        ("member@example.com", &member),
+        "member",
+    )
+    .await;
+    let (project, env_id) = project_with_env(&app, &owner, &org).await;
+
+    let (status, _) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/teams"),
+            &owner,
+            json!({"slug": "backend", "name": "Backend"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Every identifier here is the one a person actually has: a team SLUG, and an env NAME.
+    let (status, body) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/projects/{project}/grants"),
+            &owner,
+            json!({"grantee_kind": "team", "grantee_id": "backend",
+                   "project_role": "write", "env_id": "prod"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "a team slug and an env name must be accepted: {body}"
+    );
+
+    let (_, listed) = send(
+        &app,
+        get_with(
+            &format!("/v1/orgs/{org}/projects/{project}/grants"),
+            &format!("Bearer {owner}"),
+        ),
+    )
+    .await;
+    assert_eq!(
+        listed[0]["env_id"], env_id,
+        "the env NAME must have been stored as the env's id, not verbatim"
+    );
+
+    // And a user grant by EMAIL must authorize that account, which is the whole point: a
+    // grantee_id stored verbatim joins on nothing and reaches nobody.
+    let (status, body) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/projects/{project}/grants"),
+            &owner,
+            json!({"grantee_kind": "user", "grantee_id": "member@example.com",
+                   "project_role": "read"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an email must be accepted: {body}"
+    );
+    let grant = body["id"].as_str().expect("grant id");
+    let (_, fulfilled) = send(
+        &app,
+        get_with(
+            &format!(
+                "/v1/orgs/{org}/projects/{project}/grants/{grant}/fulfilled?env_id={env_id}&epoch=1"
+            ),
+            &format!("Bearer {owner}"),
+        ),
+    )
+    .await;
+    let expected = account_id(&app, &member).await;
+    assert_eq!(
+        fulfilled["members"],
+        json!([expected]),
+        "the grant must authorize the account the address named"
+    );
+}
+
+#[tokio::test]
+async fn a_grant_refuses_an_address_that_is_not_a_member() {
+    let app = fresh_app("grantstranger", None);
+    let owner = signed_up(&app, "owner@example.com").await;
+    signed_up(&app, "stranger@example.com").await;
+    let org = owned_org(&app, &owner, "acme").await;
+    let (project, _) = project_with_env(&app, &owner, &org).await;
+
+    // The address HAS an account, and is still refused, because it is not in this org. The
+    // answer must not distinguish it from an address with no account at all, or the route
+    // becomes the enumeration oracle signup was changed to close.
+    let mut answers = Vec::new();
+    for email in ["stranger@example.com", "nobody-at-all@example.com"] {
+        let (status, _) = send(
+            &app,
+            post_as(
+                &format!("/v1/orgs/{org}/projects/{project}/grants"),
+                &owner,
+                json!({"grantee_kind": "user", "grantee_id": email, "project_role": "read"}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{email} must be refused");
+        answers.push(status);
+    }
+    assert_eq!(
+        answers[0], answers[1],
+        "a registered non-member and a complete stranger must be indistinguishable"
+    );
+}
+
+#[tokio::test]
+async fn a_team_slug_from_another_org_cannot_be_granted() {
+    let app = fresh_app("grantcrossorg", None);
+    let owner = signed_up(&app, "owner@example.com").await;
+    let org = owned_org(&app, &owner, "acme").await;
+    let other = owned_org(&app, &owner, "rival").await;
+    let (project, _) = project_with_env(&app, &owner, &org).await;
+    let (status, _) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{other}/teams"),
+            &owner,
+            json!({"slug": "outsiders", "name": "Outsiders"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/projects/{project}/grants"),
+            &owner,
+            json!({"grantee_kind": "team", "grantee_id": "outsiders", "project_role": "write"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "resolving a slug must stay scoped to the org, even for someone who owns both"
+    );
+}
+
+#[tokio::test]
+async fn adding_a_team_member_accepts_an_email() {
+    let app = fresh_app("teamemail", None);
+    let owner = signed_up(&app, "owner@example.com").await;
+    let member = signed_up(&app, "member@example.com").await;
+    let org = owned_org(&app, &owner, "acme").await;
+    joined(
+        &app,
+        (&org, &owner),
+        ("member@example.com", &member),
+        "member",
+    )
+    .await;
+    let (status, _) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/teams"),
+            &owner,
+            json!({"slug": "backend", "name": "Backend"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/teams/backend/members"),
+            &owner,
+            json!({"user_id": "member@example.com", "team_role": "member"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "the CLI documents this field as 'user id or email': {body}"
+    );
+}

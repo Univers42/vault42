@@ -98,7 +98,7 @@ pub async fn create(
     Path((org, project)): Path<(String, String)>,
     Json(body): Json<GrantReq>,
 ) -> Result<(StatusCode, Json<GrantResp>)> {
-    let (project_id, _, role) = org_project(&app, (org, project), &caller).await?;
+    let (project_id, org_id, role) = org_project(&app, (org, project), &caller).await?;
     role.require_admin()?;
     if body.grantee_kind != "user" && body.grantee_kind != "team" {
         return Err(Error::BadRequest(
@@ -106,19 +106,67 @@ pub async fn create(
         ));
     }
     let project_role = ProjectRole::parse(&body.project_role)?;
+    let grantee_id = resolve_grantee(&app, &org_id, (&body.grantee_kind, body.grantee_id)).await?;
+    let env_id = resolve_env(&app, &project_id, body.env_id).await?;
     let id = uuid::Uuid::new_v4().to_string();
     app.store
         .create_grant(NewGrant {
             id: id.clone(),
             project_id,
             grantee_kind: body.grantee_kind,
-            grantee_id: body.grantee_id,
+            grantee_id,
             project_role: project_role.as_str().to_string(),
-            env_id: body.env_id,
+            env_id,
             granted_by: caller.account_id,
         })
         .await?;
     Ok((StatusCode::CREATED, Json(GrantResp { id })))
+}
+
+/// Resolve a grantee reference to the id the grant must store.
+///
+/// The stored `grantee_id` is what `authorized_members` joins on, so a slug or an address
+/// written into that column authorizes nobody — the grant looks perfectly healthy in a listing
+/// and silently reaches no one. Accepting the reference a person actually has, and resolving
+/// it here, is what stops that: `team grant-project --team infra` and
+/// `project grant --user someone@example.com` are the documented spellings, and until now both
+/// were stored verbatim and answered a bare 400 much later.
+///
+/// A team is resolved within the organization, so a slug belonging to a different org still
+/// cannot be granted. A user is resolved within its membership, so only somebody already in
+/// the organization can be named.
+async fn resolve_grantee(app: &App, org_id: &str, grantee: (&str, String)) -> Result<String> {
+    let (kind, reference) = grantee;
+    let resolved = if kind == "team" {
+        app.store
+            .resolve_team(org_id.to_string(), reference.clone())
+            .await?
+    } else {
+        let normalized =
+            crate::validate::normalize_email(&reference).unwrap_or_else(|_| reference.clone());
+        app.store
+            .resolve_org_member(org_id.to_string(), normalized)
+            .await?
+    };
+    resolved
+        .ok_or_else(|| Error::BadRequest(format!("no {kind} {reference:?} in this organization")))
+}
+
+/// Resolve an optional environment reference (id or name) within the project.
+///
+/// `None` stays `None`: a grant with no environment is project-wide, which is contract rather
+/// than convenience, so an absent value must never become a lookup failure.
+async fn resolve_env(app: &App, project_id: &str, env: Option<String>) -> Result<Option<String>> {
+    let Some(reference) = env else {
+        return Ok(None);
+    };
+    let resolved = app
+        .store
+        .resolve_environment(project_id.to_string(), reference.clone())
+        .await?;
+    resolved
+        .map(Some)
+        .ok_or_else(|| Error::BadRequest(format!("no environment {reference:?} in this project")))
 }
 
 /// List a project's live grants. Any organization member may read them.
