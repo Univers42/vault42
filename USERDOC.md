@@ -56,8 +56,13 @@ takes a second or two to wake):
 | vault42-authority | `https://vault42-authority.fly.dev` | registration / contracts |
 | Sign-up portal | `https://site-one-vert-34.vercel.app` | builds your `register` command |
 
-Registration on the hosted instance requires an **invite token** (it is a private "you + friends"
-vault). Ask the operator for it; they set it with `fly secrets set VAULT42_REGISTER_TOKEN=…`.
+Creating an ACCOUNT on the hosted instance requires an **invite token** (it is a private
+"you + friends" vault). Ask the operator for it; they set it with
+`fly secrets set VAULT42_REGISTER_TOKEN=…`, and you pass it to `auth signup --token`.
+
+Claiming a tenant needs no token: since D13 the contract is issued to your authenticated
+account, so once you have signed up and logged in you reach it with your session alone. The
+gate sits at the door to the system, not between you and your own contract.
 
 ---
 
@@ -171,7 +176,7 @@ vault42 init
 
 ### `vault42 register --authority <url> --tenant <name> [--token <t>]`
 Claim a tenant name with the authority and save the returned contract. Sends only your public key.
-`--authority` defaults to `$VAULT42_AUTHORITY`; `--token` to `$VAULT42_REGISTER_TOKEN`. Tenant names
+`--authority` defaults to `$VAULT42_AUTHORITY`. `register` needs a logged-in session, not a token. Tenant names
 are `[A-Za-z0-9_-]`, 1–64 chars.
 
 ```sh
@@ -266,7 +271,7 @@ same authority. Removing access is forward-secure — `rotate` the secret so fut
 |---|---|---|
 | `VAULT42_SERVER` | `http://127.0.0.1:8443` | vault42 data-plane URL (use `https://…` for TLS) |
 | `VAULT42_AUTHORITY` | — | contract authority URL (for `register`) |
-| `VAULT42_REGISTER_TOKEN` | — | invite token for `register` |
+| `VAULT42_REGISTER_TOKEN` | — | invite token for `signup` (account creation) |
 | `VAULT42_KEYSTORE` | `~/.config/vault42/keystore.v42` | your sealed identity |
 | `VAULT42_CONTRACT` | `~/.config/vault42/contract.tok` | your saved contract |
 | `VAULT42_PASSPHRASE` | — | non-interactive passphrase (CI); else prompted |
@@ -351,8 +356,9 @@ An earlier version of this document said the live server ran on that backend. It
 
 **Authority env** (`vault42-authority`): `VAULT42_CONTRACT_PORT` (8443), `VAULT42_CONTRACT_DB`,
 `VAULT42_CONTRACT_KEY` (the signing key, persisted on the volume), `VAULT42_CONTRACT_TTL_DAYS` (365),
-`VAULT42_REGISTER_TOKEN` (invite gate). Endpoints: `GET /healthz`, `GET /v1/contract-key`,
-`POST /v1/register {tenant, author_pubkey, token?}`.
+`VAULT42_REGISTER_TOKEN` (invite gate on `POST /v1/auth/signup`),
+`VAULT42_MAX_TENANTS_PER_ACCOUNT` (8). Endpoints: `GET /healthz`, `GET /v1/contract-key`,
+`POST /v1/register {tenant, author_pubkey}` — **authenticated**, Bearer session required.
 
 **Run locally** instead of fly: `docker run` each binary with the env above on `127.0.0.1`, point
 the CLI at `http://127.0.0.1:<port>` (plaintext is fine on loopback).

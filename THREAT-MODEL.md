@@ -439,14 +439,21 @@ on the new-epoch revision is covered there and not by a vault42 gate.
 
 ### Tenant claims (R20)
 
-- **R20 Nothing ever releases a tenant name** — `/v1/register` calls `claim_tenant`, which inserts
-  a row keyed on the name and holding the claiming author's fingerprint
-  (`crates/vault42-authority/src/store/tenants.rs:29`). There is no delete, release or unclaim
-  anywhere in the store. A re-registration succeeds only when it presents the SAME fingerprint,
-  so a name whose keystore is lost is permanently unusable by anybody, including the person who
-  registered it, with no operator recourse. This is R18 seen from the other side: losing the
-  passphrase loses the identity, and the name goes with it.
-  **Status:** live. The mitigation is to pick a new name.
+- **R20 Nothing ever releases a tenant name** — `/v1/register` called `claim_tenant`, which
+  inserted a row keyed on the name and holding the claiming author's fingerprint. There was no
+  delete, release or unclaim anywhere in the store, and a re-registration succeeded only when it
+  presented the SAME fingerprint, so a name whose keystore was lost became permanently unusable
+  by anybody — including the person who registered it, with no operator recourse.
+  **Status:** CLOSED by D13. A tenant is now owned by the ACCOUNT that claimed it, and both
+  halves of the problem follow from that ownership. The owner may re-claim their own name with a
+  fresh key, which rebinds it (`store/tenants.rs::rebind`), so a lost keystore no longer strands
+  the name — that is the part R18 made irreversible. And `erase_account` deletes the rows in the
+  same transaction that tombstones the account (`store/offboard.rs::release_tenants`), so the
+  name returns to the pool. The schema's `ON DELETE SET NULL` never provided this: the account
+  row is tombstoned rather than deleted, so the cascade never fired. Proved by
+  `deleting_an_account_releases_its_tenant_names`, which was watched failing (409 rather than
+  200) with `release_tenants` removed before it was trusted. A name held by a DIFFERENT account
+  is still refused, so nothing here makes a name stealable.
 
 - **R20a Deleting an account orphans its tenant claims rather than releasing them** — the schema
   declares `account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL`
@@ -512,14 +519,21 @@ on the new-epoch revision is covered there and not by a vault42 gate.
 
 ### Tenant claims (R20)
 
-- **R20 Nothing ever releases a tenant name** — `/v1/register` calls `claim_tenant`, which inserts
-  a row keyed on the name and holding the claiming author's fingerprint
-  (`crates/vault42-authority/src/store/tenants.rs:29`). There is no delete, release or unclaim
-  anywhere in the store. A re-registration succeeds only when it presents the SAME fingerprint,
-  so a name whose keystore is lost is permanently unusable by anybody, including the person who
-  registered it, with no operator recourse. This is R18 seen from the other side: losing the
-  passphrase loses the identity, and the name goes with it.
-  **Status:** live. The mitigation is to pick a new name.
+- **R20 Nothing ever releases a tenant name** — `/v1/register` called `claim_tenant`, which
+  inserted a row keyed on the name and holding the claiming author's fingerprint. There was no
+  delete, release or unclaim anywhere in the store, and a re-registration succeeded only when it
+  presented the SAME fingerprint, so a name whose keystore was lost became permanently unusable
+  by anybody — including the person who registered it, with no operator recourse.
+  **Status:** CLOSED by D13. A tenant is now owned by the ACCOUNT that claimed it, and both
+  halves of the problem follow from that ownership. The owner may re-claim their own name with a
+  fresh key, which rebinds it (`store/tenants.rs::rebind`), so a lost keystore no longer strands
+  the name — that is the part R18 made irreversible. And `erase_account` deletes the rows in the
+  same transaction that tombstones the account (`store/offboard.rs::release_tenants`), so the
+  name returns to the pool. The schema's `ON DELETE SET NULL` never provided this: the account
+  row is tombstoned rather than deleted, so the cascade never fired. Proved by
+  `deleting_an_account_releases_its_tenant_names`, which was watched failing (409 rather than
+  200) with `release_tenants` removed before it was trusted. A name held by a DIFFERENT account
+  is still refused, so nothing here makes a name stealable.
 
 - **R20a Deleting an account orphans its tenant claims rather than releasing them** — the schema
   declares `account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL`
