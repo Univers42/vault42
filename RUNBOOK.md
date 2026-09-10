@@ -78,8 +78,21 @@ $FLY volumes create vault42_authority_data --app vault42-authority --region cdg 
 $FLY volumes create vault42_data           --app vault42-server    --region cdg --size 1 --yes
 ```
 
-The authority needs its secrets staged before the first release, because it refuses to start
-when second factors are enabled and the mail credential to deliver them is missing:
+The authority's secrets are staged by the `deploy` workflow, from this repository's own
+Actions secrets of the same names, in the step before the release that applies them. **Only
+the two `create` commands above are manual now** — a deploy onto fresh, empty apps restores
+mail and the invite gate by itself.
+
+That step exists because it did not, and the gap was invisible: both apps were once deleted
+and recreated, the workflow redeployed them green, and the authority came up with no mail
+transport and an open signup while answering `/healthz` perfectly. The only symptom was
+`second_factors=false` in one startup line.
+
+The three second-factor secrets are staged together or not at all, because the authority
+refuses to start when a proof secret is present with no way to deliver a code — a partial set
+is a machine that never boots, so the workflow refuses rather than releasing one.
+
+By hand, if the automation is what's broken:
 
 ```sh
 $FLY secrets import --stage --app vault42-authority <<'EOF'
@@ -89,6 +102,10 @@ VAULT42_OTP_PROOF_SECRET=…
 VAULT42_REGISTER_TOKEN=…   # gates ACCOUNT CREATION (/v1/auth/signup), not /v1/register
 EOF
 ```
+
+Pass the token by NAME (`-e FLY_API_TOKEN`, as `$FLY` above does), never inline as
+`-e FLY_API_TOKEN=$(…)`. A fly token is two words — `FlyV1 fm2_…` — so unquoted expansion
+splits it and docker reads the tail as an image name.
 
 **Deploy the authority first.** The server's `VAULT42_CONTRACT_PUBKEY` is the authority's
 public key, so releasing the server first pins it to a key that does not exist yet, and every
