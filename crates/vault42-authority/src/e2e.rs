@@ -141,7 +141,7 @@ pub(crate) async fn signed_up(app: &Arc<App>, email: &str) -> String {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "signup should succeed");
+    assert_eq!(status, StatusCode::ACCEPTED, "signup should be accepted");
     let (status, body) = send(
         app,
         post(
@@ -199,31 +199,45 @@ async fn signup_then_login_then_me_round_trips() {
 }
 
 #[tokio::test]
-async fn signup_normalizes_email_case_and_refuses_the_duplicate() {
+async fn signup_answers_identically_for_a_fresh_and_an_existing_address() {
     let app = fresh_app("dup", None);
+    let signup = |email: &'static str, password: &'static str| {
+        post(
+            "/v1/auth/signup",
+            json!({"email": email, "password": password}),
+        )
+    };
+    let (first_status, first_body) = send(&app, signup("Dev@Archicode.Codes", PASSWORD)).await;
+    assert_eq!(first_status, StatusCode::ACCEPTED);
+
+    let (second_status, second_body) = send(
+        &app,
+        signup("dev@archicode.codes", "a-different-password-9x"),
+    )
+    .await;
+    assert_eq!(
+        second_status, first_status,
+        "an address that exists must answer exactly as a fresh one, or signup enumerates accounts"
+    );
+    assert_eq!(
+        second_body, first_body,
+        "the bodies must match too; a differing body enumerates just as well as a status"
+    );
+
     let (status, _) = send(
         &app,
         post(
-            "/v1/auth/signup",
-            json!({"email": "Dev@Archicode.Codes", "password": PASSWORD}),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    let (status, body) = send(
-        &app,
-        post(
-            "/v1/auth/signup",
+            "/v1/auth/login",
             json!({"email": "dev@archicode.codes", "password": PASSWORD}),
         ),
     )
     .await;
     assert_eq!(
         status,
-        StatusCode::CONFLICT,
-        "case must not create a second account"
+        StatusCode::OK,
+        "positive control: the FIRST password must still work — swallowing the conflict must not \
+         let a stranger replace somebody's credential with their own"
     );
-    assert_eq!(body["error"], "email already registered");
 }
 
 #[tokio::test]

@@ -399,14 +399,24 @@ async fn deleting_an_account_ends_its_sessions() {
         &app,
         crate::e2e::post(
             "/v1/auth/signup",
-            json!({"email": "off6-bob@archicode.codes", "password": crate::e2e::PASSWORD}),
+            json!({"email": "off6-bob@archicode.codes", "password": "a-brand-new-password-4z"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (status, _) = send(
+        &app,
+        crate::e2e::post(
+            "/v1/auth/login",
+            json!({"email": "off6-bob@archicode.codes", "password": "a-brand-new-password-4z"}),
         ),
     )
     .await;
     assert_eq!(
         status,
-        StatusCode::CREATED,
-        "erasure frees the address for a genuinely new account"
+        StatusCode::OK,
+        "erasure frees the address: the NEW password must mint a session, which is the only \
+         evidence left now that signup answers 202 whether the address was free or not"
     );
 }
 

@@ -51,10 +51,20 @@ pub struct PasswdReq {
     new_password: String,
 }
 
-/// The account identity returned by signup.
+/// What signup tells the caller, which is deliberately nothing about the address.
+///
+/// There is no account id here on purpose: returning one would confirm the address is now
+/// registered, which is the fact the uniform status code exists to withhold.
 #[derive(Serialize)]
-pub struct AccountResp {
-    account_id: String,
+pub struct SignupResp {
+    status: &'static str,
+}
+
+impl SignupResp {
+    /// The one answer signup ever gives.
+    fn new() -> Self {
+        Self { status: "accepted" }
+    }
 }
 
 /// A minted session.
@@ -73,20 +83,38 @@ pub struct MeResp {
     mfa_required: bool,
 }
 
-/// Create an account. 409 when the email is already registered.
+/// Create an account, telling the caller nothing about whether the address was already taken.
+///
+/// It used to answer 201 for a fresh address and 409 for one that exists, which let anybody learn
+/// who has an account by trying to register them — no password required. Login is careful about
+/// exactly this and refuses identically either way; signup undid it (THREAT-MODEL R24).
+///
+/// Both cases now answer 202 with the same body, and the account id moves behind authentication:
+/// `GET /v1/auth/me` returns it to a caller who has proved they own the account, where it is not
+/// a leak. Nothing is overwritten when the address exists — the insert carries a unique
+/// constraint, so the conflict is swallowed rather than resolved, and an attacker cannot use this
+/// to replace somebody's password with their own.
+///
+/// The password is hashed BEFORE the address is looked at, and that ordering is load-bearing:
+/// Argon2 dominates this handler's cost, so skipping it for an address that exists would answer
+/// faster and rebuild the oracle out of timing after the status codes stopped telling.
 pub async fn signup(
     State(app): State<Arc<App>>,
     Json(body): Json<Credentials>,
-) -> Result<(StatusCode, Json<AccountResp>)> {
+) -> Result<(StatusCode, Json<SignupResp>)> {
     let email = validate::normalize_email(&body.email).map_err(Error::BadRequest)?;
     let secret = Zeroizing::new(body.password);
     validate::check_password(&secret).map_err(Error::BadRequest)?;
     let hash = password::hash(&secret).map_err(Error::Internal)?;
     let account_id = uuid::Uuid::new_v4().to_string();
-    app.store
-        .create_account(account_id.clone(), email, hash, now_unix())
-        .await?;
-    Ok((StatusCode::CREATED, Json(AccountResp { account_id })))
+    match app
+        .store
+        .create_account(account_id, email, hash, now_unix())
+        .await
+    {
+        Ok(()) | Err(Error::Conflict(_)) => Ok((StatusCode::ACCEPTED, Json(SignupResp::new()))),
+        Err(other) => Err(other),
+    }
 }
 
 /// Exchange credentials for a bearer token.

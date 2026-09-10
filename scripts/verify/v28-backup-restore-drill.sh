@@ -96,7 +96,10 @@ stop() { kill "$SRV" 2>/dev/null || true; wait "$SRV" 2>/dev/null || true; }
 
 start
 code=$(http /v1/auth/signup)
-[ "$code" = "201" ] || { echo "SIGNUP-FAILED code=$code"; exit 1; }
+# 202, not 201: signup answers the same whether the address was free or taken, so that it cannot
+# be used to enumerate accounts (THREAT-MODEL R24). That the account really exists is proved a few
+# lines below by logging in with it, which is the only evidence a uniform status leaves.
+[ "$code" = "202" ] || { echo "SIGNUP-FAILED code=$code"; exit 1; }
 code=$(http /v1/auth/login)
 [ "$code" = "200" ] || { echo "BASELINE-LOGIN-FAILED code=$code"; exit 1; }
 

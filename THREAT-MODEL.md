@@ -120,6 +120,28 @@ on the new-epoch revision is covered there and not by a vault42 gate.
   per-tenant opt-in as secrets (R1/R11), and audited; a scope key never silently inherits recovery
   escrow.
 
+### Project layout (R25)
+
+- **R25 A submodule parked under a dependency directory is dropped, silently** — the client's scan
+  never descends into `vendor`, `node_modules`, `target`, `dist`, `build` or `.cache`, which is
+  right for vendored source and wrong for a submodule someone put there. Its environment file and
+  its whole `secrets/` directory are skipped, and `push` reports success.
+  **Status:** LIVE, and it is directly the operator's stated shape — "a lot of projects and
+  submodules with their own things to store". Found while building `v30`, which is why that gate
+  places its nested module under `modules/` rather than freezing today's behaviour by asserting it.
+
+  Same family as the `secrets/` omission fixed in 42ctl bd7f87e: a write that decides not to
+  happen, reported as success. The proposed rule is to descend into a skipped directory for any
+  entry that is itself a git repository — a submodule is a git boundary, separate projects are the
+  things that have secrets, and vendored source almost never carries either. It lives in the
+  client, and is 42ctl's `qa/specs/s15` expected-red.
+
+- **R25a Two projects sharing every relative path stay apart — verified** — a blob's id is
+  `secret_id(principal, "{project_id}/{rel}")` and its server path carries the project id as well,
+  so one owner's two projects cannot collide even when laid out identically. That was an argument
+  from the derivation until `v30` made it a test: each project restores its own bytes, a nested
+  module keeps its own `secrets/` at mode 600, and neither tree appears inside the other.
+
 ### Guessing and spending (R23)
 
 - **R23 Nothing limited password guessing — FIXED** — twenty wrong passwords in a row followed by
