@@ -45,7 +45,9 @@ set -eu
 AUTHORITY="${AUTHORITY_URL:-https://vault42-authority.fly.dev}"
 SERVER="${SERVER_URL:-https://vault42-server.fly.dev}"
 : "${C42:?set C42 to the 42ctl binary}"
-: "${FT_REGISTER_TOKEN:?set FT_REGISTER_TOKEN; the authority gates /v1/register}"
+# The invite token gates ACCOUNT CREATION since D13, not /v1/register. It is optional here:
+# an authority with no gate configured lets the signup through without one.
+FT_REGISTER_TOKEN="${FT_REGISTER_TOKEN:-}"
 
 WORK="$(mktemp -d)"
 INC="${INCEPTION_DIR:-$WORK/Inception}"
@@ -73,16 +75,31 @@ declared_secrets() {
 		sed 's|\.\./secrets/||' | sort -u
 }
 
-# An identity and a contract from the live authority. Every run gets its own tenant, so a
-# rerun never inherits the last one's state and a failure is never someone else's residue.
+# An identity, an ACCOUNT, and a contract from the live authority. Every run gets its own
+# account and tenant, so a rerun never inherits the last one's state and a failure is never
+# someone else's residue.
+#
+# The contract is issued to an authenticated account (D13), so the account and its session come
+# first and `--tenant` rides along on the password login. A bare `auth login --tenant` has no
+# session to present and is refused before anything is signed.
 enrol() {
+	mail="scenario-$$@archicode.codes"
+	FT_PASSWORD="scenario-pw-$$-$(date +%s)"
+	export FT_PASSWORD
 	"$C42" config endpoint --server "$SERVER" --authority "$AUTHORITY" >/dev/null
 	"$C42" keys init >/dev/null || fail "keys init failed"
-	"$C42" auth login --tenant "scenario-$$" >/dev/null ||
+	if [ -n "$FT_REGISTER_TOKEN" ]; then
+		"$C42" auth signup --email "$mail" --token "$FT_REGISTER_TOKEN" >/dev/null ||
+			fail "the live authority refused the signup"
+	else
+		"$C42" auth signup --email "$mail" >/dev/null ||
+			fail "the live authority refused the signup"
+	fi
+	"$C42" auth login --password --email "$mail" --tenant "scenario-$$" >/dev/null ||
 		fail "the live authority refused to issue a contract"
 	"$C42" auth whoami | grep -q 'contract  bound' ||
 		fail "logged in without a bound contract; the vault would reject every call"
-	ok "the live authority issued a contract"
+	ok "the live authority issued a contract to an authenticated account"
 }
 
 # Fill the project the way an operator does: the environment from its own template, and one
