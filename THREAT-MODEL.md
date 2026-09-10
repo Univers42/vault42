@@ -176,6 +176,27 @@ on the new-epoch revision is covered there and not by a vault42 gate.
   from the derivation until `v30` made it a test: each project restores its own bytes, a nested
   module keeps its own `secrets/` at mode 600, and neither tree appears inside the other.
 
+### Deployment posture (R28)
+
+- **R28 Forgetting the contract key ran the server open, silently — FIXED** — without
+  `VAULT42_CONTRACT_PUBKEY` the server accepts any self-generated keypair: no authority vouches
+  for anybody and the only remaining limit is the per-owner cap. That is a legitimate way to run,
+  and it is how every local harness runs. It was also what you got by FORGETTING the variable, so
+  a deployment that lost the secret, or a config with a typo in the name, came up looking healthy
+  and gated nobody.
+  **Status:** closed. The open posture needs `VAULT42_ALLOW_UNGATED=1`, and the refusal names it.
+
+  Refusing a MALFORMED key was already the rule, for exactly this reasoning — the two postures are
+  opposite and there is no safe third reading. An ABSENT key was the same question with a quieter
+  failure, and it had been left alone because absence looks like a default rather than a decision.
+
+  Nothing explicit changes meaning. What changes is that the two ways of being wrong — forgetting
+  the key, and meaning to run open — no longer look identical from outside.
+
+  Held by `running_ungated_requires_saying_so`, which also requires the refusal to NAME the opt-in:
+  an operator who cannot see the way out debugs the wrong layer and eventually disables the right
+  one.
+
 ### Guessing and spending (R23)
 
 - **R23 Nothing limited password guessing — FIXED** — twenty wrong passwords in a row followed by

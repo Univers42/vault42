@@ -85,6 +85,7 @@ start_server() {
 	docker run -d --name "$SRV" --network "$NET" -v "$ROOT":/work -w /work \
 		-v vault42-cargo-registry:/usr/local/cargo/registry \
 		-v vault42-cargo-git:/usr/local/cargo/git -v vault42-target:/work/target \
+		-e VAULT42_ALLOW_UNGATED=1 \
 		-e VAULT42_HOST=0.0.0.0 -e VAULT42_PORT=8443 -e VAULT42_DB=/tmp/v29.db \
 		-e RUST_LOG=info -e NO_COLOR=1 "$IMG" \
 		sh -c 'cargo run -q --locked --bin vault42-server' >/dev/null

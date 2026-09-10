@@ -71,6 +71,8 @@ impl Config {
             .then(grobase_store_cfg)
             .flatten();
         let contract_pub = contract_pub().map_err(|why| anyhow::anyhow!(why))?;
+        require_a_deliberate_gate_decision(contract_pub.is_some(), flag("VAULT42_ALLOW_UNGATED"))
+            .map_err(|why| anyhow::anyhow!(why))?;
         Ok(Self {
             bind: format!("{host}:{port}"),
             db_path: env("VAULT42_DB", "/data/vault42.db"),
@@ -82,6 +84,33 @@ impl Config {
             scope_keys_enabled: flag("VAULT42_SCOPE_KEYS_ENABLED"),
         })
     }
+}
+
+/// Refuse to start ungated unless somebody said so.
+///
+/// Without `VAULT42_CONTRACT_PUBKEY` the server accepts any self-generated keypair: no authority
+/// vouches for anybody, and the only remaining limit is the per-owner secret cap. That is a
+/// legitimate way to run — it is how every local harness runs — and it is the opposite security
+/// posture from the deployed one.
+///
+/// It used to be what you got by FORGETTING the variable. A missing value chose the open posture
+/// silently, so a deployment that lost its secret, or a config file with a typo in the name, came
+/// up looking healthy and gated nobody. Refusing a malformed key was already the rule for exactly
+/// this reason; an absent one is the same question with a quieter failure.
+///
+/// So the open posture now needs a word: `VAULT42_ALLOW_UNGATED=1`. Nothing that was explicit
+/// before changes meaning, and the two ways to be wrong — forgetting the key, and meaning to run
+/// open — stop looking identical.
+fn require_a_deliberate_gate_decision(gated: bool, allow_ungated: bool) -> Result<(), String> {
+    if gated || allow_ungated {
+        return Ok(());
+    }
+    Err(
+        "VAULT42_CONTRACT_PUBKEY is unset, so no authority would vouch for any caller. Set it to \
+         the authority's public key, or set VAULT42_ALLOW_UNGATED=1 to say you meant to run \
+         without a contract gate."
+            .to_string(),
+    )
 }
 
 /// Read a boolean feature flag (OFF unless explicitly "1" or "true"). Default OFF keeps
@@ -190,6 +219,31 @@ mod tests {
                 "{other:?} must not move the vault's data plane onto grobase"
             );
         }
+    }
+
+    /// Forgetting the key and meaning to run open must not look the same.
+    ///
+    /// The open posture accepts any self-generated keypair, so arriving at it by omission is the
+    /// failure that comes up healthy and gates nobody.
+    #[test]
+    fn running_ungated_requires_saying_so() {
+        assert!(
+            require_a_deliberate_gate_decision(false, false).is_err(),
+            "an absent contract key with no opt-in must refuse to start"
+        );
+        assert!(
+            require_a_deliberate_gate_decision(false, true).is_ok(),
+            "positive control: the explicit opt-in must still work, or local harnesses cannot run"
+        );
+        assert!(
+            require_a_deliberate_gate_decision(true, false).is_ok(),
+            "positive control: a gated server must start without any opt-in"
+        );
+        let why = require_a_deliberate_gate_decision(false, false).expect_err("refuses");
+        assert!(
+            why.contains("VAULT42_ALLOW_UNGATED"),
+            "the refusal must name the way out, or an operator debugs the wrong layer: {why}"
+        );
     }
 
     /// Unset means standalone, and that is the only way to get standalone.
