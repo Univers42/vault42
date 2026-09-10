@@ -148,6 +148,26 @@ on the new-epoch revision is covered there and not by a vault42 gate.
   **Status:** closed, held by `a_read_only_member_cannot_write_an_env_secret`, which also requires
   the same reader to still READ — a split that denies reading is not a split.
 
+- **R22g The rule was correct and inert for one commit** — worth recording, because R22a reads as
+  closed and for a period it was closed and had no effect. `GET .../grants` did not report a
+  grant's role, so the client (which fails closed on a missing role) minted `Reader` for everybody:
+  a team granted `write` could not write, and the only writer was a scope creator whose self-wrap
+  is `Writer` by construction rather than by any grant. Silent both ways — the grant said write,
+  the wrap said read, only the wrap is enforced and only the grant is displayed.
+
+  It was found because a teammate's assertion "a read-only member cannot write" went GREEN when
+  enforcement landed, and it was green because NOBODY could write. **The negative half of a
+  permission test is satisfied by a system that refuses everyone, and it reads as extra safety
+  rather than as a fault** — worse than a vacuous pass, which at least looks like nothing. The
+  positive control they had not yet written, that a member granted write CAN write, was the only
+  thing that showed it.
+
+  Neither test suite could have found it alone. The server's own tests build a grant directly, so
+  the path from a grant's role to a wrap's role never appears in them; the client's tests cannot
+  reach the deposit rule that R22e closes. The defect lived in the seam.
+  `the_grant_listing_reports_each_grants_role` covers it now, asserting both roles because a
+  listing hard-coded to `write` would satisfy a one-role test.
+
 - **R22e Depositing a grant requires `Writer`, and this is what makes the role real** — the rule
   above is bypassable on its own, and that was measured rather than argued. A `Reader` holds the
   scope secret, because reading requires it, so they can mint a grant to THEMSELVES carrying
