@@ -35,11 +35,23 @@ jobs:
   # missing toolchain image would otherwise let this job pass having run nothing at all.
   gates:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 60 rather than 30 because v29 builds TWO 42ctl clients, one of them at a 2026-06 commit
+    # against the vault42-core revision of its own day. That is the cost of having any evidence at
+    # all about reading what an older client wrote.
+    timeout-minutes: 60
     env:
       RUST_TOOLCHAIN_IMG: public.ecr.aws/docker/library/rust:1.96-slim-bookworm
+      C42_DIR: ${{ github.workspace }}/c42
     steps:
       - uses: actions/checkout@v4
+      # The client, with FULL history: v29 checks out a specific old commit to build, and a
+      # shallow clone has no such commit. Without this the gate SKIPS, and --strict turns a skip
+      # into a failure — which is the correct behaviour and not a reason to weaken the flag.
+      - uses: actions/checkout@v4
+        with:
+          repository: Univers42/42ctl
+          path: c42
+          fetch-depth: 0
       # Pulled explicitly rather than left to the gates: they check for the image and skip
       # when it is absent, and a skip must not be how this job succeeds.
       #

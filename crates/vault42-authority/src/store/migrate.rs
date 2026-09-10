@@ -311,6 +311,23 @@ CREATE TABLE IF NOT EXISTS escrow (
 );
 ";
 
+/// P8: the attempt ledger behind every rate limit.
+///
+/// One table for both callers rather than one per caller: a login throttle and a code-request
+/// throttle are the same question asked about different buckets, and two tables would drift.
+/// Keyed on `(bucket, subject)` where the subject is a normalized email — never an IP, because
+/// behind a proxy the only address available is one a client can set, and a limit keyed on a
+/// value the attacker chooses is not a limit.
+const M8: &str = "
+CREATE TABLE IF NOT EXISTS attempts (
+  bucket       TEXT    NOT NULL,
+  subject      TEXT    NOT NULL,
+  count        INTEGER NOT NULL,
+  window_start INTEGER NOT NULL,
+  PRIMARY KEY (bucket, subject)
+);
+";
+
 /// The ordered migration ledger: `(version, name, sql)`.
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "accounts_sessions_tenants", M1),
@@ -320,6 +337,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (5, "grant_wraps_per_env_epoch", M5),
     (6, "group_members_bound_to_org", M6),
     (7, "otp_codes_and_escrow", M7),
+    (8, "attempts", M8),
 ];
 
 /// Apply every migration not yet recorded, in version order.

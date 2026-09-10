@@ -22,6 +22,7 @@ use crate::auth::{password, session, Principal};
 use crate::error::{Error, Result};
 use crate::handlers::secondfactor;
 use crate::store::Account;
+use crate::throttle;
 use crate::validate;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -94,14 +95,16 @@ pub async fn login(
     Json(body): Json<Credentials>,
 ) -> Result<Json<LoginResp>> {
     let email = validate::normalize_email(&body.email).map_err(Error::BadRequest)?;
+    throttle::guard(&app, throttle::LOGIN, &email).await?;
     let secret = Zeroizing::new(body.password);
-    let Some(account) = app.store.account_by_email(email).await? else {
+    let Some(account) = app.store.account_by_email(email.clone()).await? else {
         password::verify_absent(&secret);
         return Err(Error::Unauthorized);
     };
     if account.status != "active" || !password::verify(&secret, &account.password_hash) {
         return Err(Error::Unauthorized);
     }
+    app.store.clear_attempts(throttle::LOGIN, email).await?;
     mint_session(&app, &account, body.otp_proof.as_deref()).await
 }
 

@@ -120,6 +120,51 @@ on the new-epoch revision is covered there and not by a vault42 gate.
   per-tenant opt-in as secrets (R1/R11), and audited; a scope key never silently inherits recovery
   escrow.
 
+### Guessing and spending (R23)
+
+- **R23 Nothing limited password guessing — FIXED** — twenty wrong passwords in a row followed by
+  the right one let the right one through. No lockout, no backoff, no refusal. The only thing
+  between an attacker with a leaked address list and an account was patience.
+  **Status:** closed. Five attempts per address per hour, then a refusal.
+
+  **The correct password is refused while throttled**, which is the whole property: a limit a
+  correct guess walks through is not a limit, and an attacker's last guess is a correct one.
+  `the_correct_password_is_refused_while_throttled` holds it. A successful login clears the count,
+  so somebody who mistypes twice carries nothing into their next hour.
+
+- **R23a Nothing limited one-time-code requests — FIXED** — ten in a row all answered 200, and in
+  production each is a real message through a real mail credential: somebody's inbox, this
+  project's sending reputation, and the bill. **Status:** closed, same limit, same primitive.
+
+- **R23b The limit is counted BEFORE the account lookup, or it becomes the oracle it defends
+  against** — the code path already answers identically for an address with an account and one
+  without, which is what stops an attacker enumerating users. A limit applied after the lookup
+  undoes exactly that: the throttled answer would arrive only for addresses that exist, and the
+  defence would hand over what the original design refused.
+  `the_code_request_limit_answers_the_same_for_a_known_and_an_unknown_address` drives both to the
+  limit and requires their sequences of statuses to be identical at every step, not merely both
+  eventually refused. Moving the guard after the lookup fails it.
+
+- **R23c Keyed on the address, not the source, and that is a trade** — behind a proxy the only
+  source available is a header the client can set, and a limit keyed on a value the attacker
+  chooses is not a limit. Keying on the address means an attacker can slow a real person down by
+  guessing at them. That is why this backs off rather than locking out: bounded, self-decaying,
+  and cleared by a success. A hard lockout would hand any attacker indefinite denial of an account,
+  which is the worse trade. **Status:** accepted.
+
+- **R24 Signup still enumerates accounts** — `POST /v1/auth/signup` answers 201 for a fresh address
+  and 409 for one that exists, so an attacker learns who has an account by trying to register them,
+  no password required. Login is careful about precisely this and returns an identical refusal
+  either way; signup undoes it.
+  **Status:** LIVE. Rate limiting does not help — each address gets its own bucket, so enumerating
+  across many addresses is unaffected.
+
+  Not fixed here because it is a contract change: 42ctl reads `account_id` from the signup response
+  and prints it, so hiding existence breaks the client. The design is for signup to answer the same
+  for both cases and for the account id to move behind authentication, where `GET /v1/auth/me`
+  already returns it to a caller who has proved they own the account. It lands when the client is
+  ready for it, in that order.
+
 ### Environment secrets (R22)
 
 - **R22 Writing an environment secret was authorized by nothing — FIXED** —

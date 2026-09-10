@@ -53,3 +53,14 @@ is not a statement about the code. It runs from the deploy workflow, after a rel
 are awake anyway. It carries the same discipline: it was proved to fail by pointing it at the wrong
 host and at a host that speaks HTTP where gRPC is expected, and its exit status was read directly,
 because piping it into `tail` replaces the script's status with the pipe's.
+
+**A compatibility gate must prove its old client is old.** `v29-old-client-compat` checks out 42ctl
+at a commit whose manifest predates `chunked` and `rev`, builds it against the vault42-core revision
+of its own day, pushes with it, and reads the result with HEAD. Every other test in either
+repository pushes and pulls with the same binary, so none of them can see a compatibility
+regression at all. The load-bearing part is not the round trip: it is the check, run before anything
+is built, that the chosen commit really lacks those fields. An old-compatibility test that quietly
+used a current client would pass forever and prove nothing, so pointing `OLD_CLIENT_REF` at a recent
+commit must FAIL rather than go green — that was proved, not assumed. The gate needs `../42ctl` with
+full history, so CI checks the client out at `fetch-depth: 0`; without it the gate skips, and
+`--strict` turns a skip into a failure, which is correct and is not a reason to weaken the flag.

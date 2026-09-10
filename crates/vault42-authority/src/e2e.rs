@@ -250,6 +250,104 @@ async fn signup_rejects_a_short_password_and_a_junk_email() {
 }
 
 #[tokio::test]
+async fn password_guessing_runs_out_of_attempts() {
+    let app = fresh_app("throttle-login", None);
+    let _ = signed_up(&app, "guessed@archicode.codes").await;
+    let wrong = |n: u32| {
+        post(
+            "/v1/auth/login",
+            json!({"email": "guessed@archicode.codes", "password": format!("wrong-{n}")}),
+        )
+    };
+    let mut seen_401 = 0;
+    for n in 0..5 {
+        let (status, _) = send(&app, wrong(n)).await;
+        if status == StatusCode::UNAUTHORIZED {
+            seen_401 += 1;
+        }
+    }
+    assert!(
+        seen_401 > 0,
+        "positive control: early guesses must be answered 401, or the refusal below says \
+         nothing about a limit"
+    );
+    let (status, _) = send(&app, wrong(99)).await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "guessing must run out of attempts"
+    );
+}
+
+/// While throttled, even the RIGHT password is refused. That is the property — a limit a correct
+/// guess walks through is not a limit, and an attacker's last guess is a correct one.
+#[tokio::test]
+async fn the_correct_password_is_refused_while_throttled() {
+    let app = fresh_app("throttle-correct", None);
+    let _ = signed_up(&app, "locked@archicode.codes").await;
+    for n in 0..6 {
+        send(
+            &app,
+            post(
+                "/v1/auth/login",
+                json!({"email": "locked@archicode.codes", "password": format!("no-{n}")}),
+            ),
+        )
+        .await;
+    }
+    let (status, _) = send(
+        &app,
+        post(
+            "/v1/auth/login",
+            json!({"email": "locked@archicode.codes", "password": PASSWORD}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the correct password must not walk through the limit"
+    );
+}
+
+/// A person who mistypes and then gets it right carries no penalty forward.
+#[tokio::test]
+async fn a_successful_login_clears_the_penalty() {
+    let app = fresh_app("throttle-clears", None);
+    let _ = signed_up(&app, "typo@archicode.codes").await;
+    for n in 0..3 {
+        send(
+            &app,
+            post(
+                "/v1/auth/login",
+                json!({"email": "typo@archicode.codes", "password": format!("oops-{n}")}),
+            ),
+        )
+        .await;
+    }
+    let good = || {
+        post(
+            "/v1/auth/login",
+            json!({"email": "typo@archicode.codes", "password": PASSWORD}),
+        )
+    };
+    let (status, _) = send(&app, good()).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "three typos must not lock anybody out"
+    );
+    for _ in 0..3 {
+        let (status, _) = send(&app, good()).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the successful login must have cleared the count, not merely passed it"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_wrong_password_and_an_unknown_email_are_indistinguishable() {
     let app = fresh_app("enumerate", None);
     let _ = signed_up(&app, "real@archicode.codes").await;

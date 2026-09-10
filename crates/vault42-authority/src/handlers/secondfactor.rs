@@ -95,6 +95,7 @@ pub async fn request(
 ) -> Result<StatusCode> {
     app.proof_secret()?;
     let email = validate::normalize_email(&body.email).map_err(Error::BadRequest)?;
+    crate::throttle::guard(&app, crate::throttle::CODE, &email).await?;
     if app.store.account_by_email(email.clone()).await?.is_some() {
         issue_code(&app, email).await?;
     }

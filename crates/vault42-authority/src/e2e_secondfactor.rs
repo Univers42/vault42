@@ -105,6 +105,49 @@ pub(crate) async fn proof_for(app: &Arc<crate::app::App>, email: &str, code: &st
 }
 
 /// A code works once, and the proof it earns is bound to the address that received it.
+/// The code-request limit must not become an account-enumeration oracle.
+///
+/// The unthrottled path was already careful: an address with an account and one without both
+/// answer 200, so an attacker learns nothing from asking. A limit applied AFTER the account lookup
+/// would have undone that — the throttled answer would arrive only for addresses that exist, and
+/// the defence would have handed over exactly what the original design refused to.
+///
+/// So both addresses are driven to the limit and their sequences of statuses are required to be
+/// identical, not merely both eventually refused.
+#[tokio::test]
+async fn the_code_request_limit_answers_the_same_for_a_known_and_an_unknown_address() {
+    let app = fresh_app("code-oracle", None);
+    let _ = signed_up(&app, "known@archicode.codes").await;
+
+    let sequence = |app: std::sync::Arc<crate::app::App>, email: &'static str| async move {
+        let mut seen = Vec::new();
+        for _ in 0..7 {
+            let (status, _) =
+                send(&app, post("/v1/auth/otp/request", json!({"email": email}))).await;
+            seen.push(status);
+        }
+        seen
+    };
+
+    let known = sequence(app.clone(), "known@archicode.codes").await;
+    let unknown = sequence(app.clone(), "nobody@archicode.codes").await;
+
+    assert!(
+        known.contains(&StatusCode::OK),
+        "positive control: early requests must be answered 200, or comparing the two sequences \
+         compares two walls of refusals and proves nothing"
+    );
+    assert!(
+        known.contains(&StatusCode::TOO_MANY_REQUESTS),
+        "positive control: the limit must actually be reached within the sequence"
+    );
+    assert_eq!(
+        known, unknown,
+        "a known address and an unknown one must answer identically at every step; a limit that \
+         differs is an enumeration oracle"
+    );
+}
+
 #[tokio::test]
 async fn a_code_earns_a_proof_once() {
     let tag = "p5-once";

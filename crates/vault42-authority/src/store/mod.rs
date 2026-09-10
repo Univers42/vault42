@@ -19,6 +19,7 @@
 //! rules in the schema are enforced by the database rather than by handlers.
 
 mod accounts;
+mod attempts;
 mod authz;
 mod environments;
 mod grants;

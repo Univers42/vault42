@@ -50,6 +50,7 @@ mod pop;
 mod rbac;
 mod routes;
 mod store;
+mod throttle;
 mod validate;
 
 use app::App;

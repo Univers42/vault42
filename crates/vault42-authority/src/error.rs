@@ -27,6 +27,14 @@ pub enum Error {
     BadRequest(String),
     #[error("unauthorized")]
     Unauthorized,
+    /// The caller has spent its attempts for this address in the current window.
+    ///
+    /// Deliberately indistinguishable between an address that has an account and one that does
+    /// not, because the limit is counted before anything is looked up. A limit that answered
+    /// differently for a real address would be an account-enumeration oracle wearing the costume
+    /// of a defence.
+    #[error("too many attempts; try again later")]
+    TooManyRequests,
     #[error("forbidden")]
     Forbidden,
     #[error("not found")]
@@ -46,6 +54,7 @@ impl Error {
         match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Conflict(_) => StatusCode::CONFLICT,
