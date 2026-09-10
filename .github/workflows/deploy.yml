@@ -88,6 +88,66 @@ jobs:
           printf 'commit: %s\n' "$(git rev-parse HEAD)"
           printf 'target: %s\n' "$TARGET"
 
+      # The authority's own secrets, staged from this repository's before the release that
+      # applies them. Without this the deploy is NOT reproducible: an app recreated from
+      # scratch comes up with no mail transport and no invite gate, reports itself perfectly
+      # healthy, and the whole degradation is one word in one startup log line. That happened.
+      #
+      # --stage rather than set, so the deploy immediately after applies them in the same
+      # release and the machine restarts once instead of twice. The values go in over stdin
+      # from a file, never in an argument list, and the file dies with the runner.
+      - name: stage the authority's secrets
+        if: ${{ (inputs.target || 'both') != 'server' }}
+        env:
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          VAULT42_OTP_PROOF_SECRET: ${{ secrets.VAULT42_OTP_PROOF_SECRET }}
+          VAULT42_REGISTER_TOKEN: ${{ secrets.VAULT42_REGISTER_TOKEN }}
+        run: |
+          set -u
+          staged="$(mktemp)"
+          trap 'rm -f "$staged"' EXIT
+
+          # The three second-factor secrets travel together or not at all. The authority
+          # refuses to start when a proof secret is present with no way to deliver a code
+          # (config.rs::check_mail_usable), so a PARTIAL set is not a degraded deployment —
+          # it is a machine that never boots. Counting them and refusing in between is the
+          # difference between a red deploy and a red vault.
+          have=0
+          for value in "$MAIL_FROM" "$MAIL_PASSWORD" "$VAULT42_OTP_PROOF_SECRET"; do
+            if [ -n "$value" ]; then have=$((have + 1)); fi
+          done
+          case "$have" in
+            3)
+              printf 'MAIL_FROM=%s\n' "$MAIL_FROM" >>"$staged"
+              printf 'MAIL_PASSWORD=%s\n' "$MAIL_PASSWORD" >>"$staged"
+              printf 'VAULT42_OTP_PROOF_SECRET=%s\n' "$VAULT42_OTP_PROOF_SECRET" >>"$staged"
+              printf 'second factors: ON\n' ;;
+            0)
+              printf 'second factors: OFF (no mail secrets configured)\n' ;;
+            *)
+              printf 'refusing: %s of 3 second-factor secrets are set\n' "$have"
+              printf 'set all of MAIL_FROM, MAIL_PASSWORD, VAULT42_OTP_PROOF_SECRET, or none\n'
+              exit 1 ;;
+          esac
+
+          # Optional and independent: an authority with no invite token simply has an open
+          # signup, which is a posture rather than a fault. Since the contract is issued to an
+          # authenticated account (D13), this gates who may create one — not who may register.
+          if [ -n "$VAULT42_REGISTER_TOKEN" ]; then
+            printf 'VAULT42_REGISTER_TOKEN=%s\n' "$VAULT42_REGISTER_TOKEN" >>"$staged"
+            printf 'signup gate: ON\n'
+          else
+            printf 'signup gate: OFF (anyone may create an account)\n'
+          fi
+
+          if [ ! -s "$staged" ]; then
+            printf 'nothing to stage\n'
+            exit 0
+          fi
+          docker run --rm -i -e FLY_API_TOKEN "$FLYCTL" \
+            secrets import --stage --app vault42-authority <"$staged"
+
       - name: deploy vault42-authority
         if: ${{ (inputs.target || 'both') != 'server' }}
         run: |
