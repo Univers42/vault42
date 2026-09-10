@@ -67,8 +67,15 @@ start_server() {
 	fail "vault42-server never listened"
 }
 
+# Runs as the INVOKING USER, not docker's default root. The assertions below read the pulled
+# tree from the HOST, and a pull writes it: restored files are 0600 and a restored directory is
+# 0700, so a root-owned tree is one this user cannot even traverse. `[ -f srcs/.env ]` then
+# reports a file that is sitting right there, and the gate fails claiming an isolation break
+# that is really permission denied.
 client() {
-	docker run --rm --network "$NET" -v "$CTL/target":/c -v "$WORK/state":/state \
+	docker run --rm --network "$NET" --user "$(id -u):$(id -g)" \
+		-v "$CTL/target":/c -v "$WORK/state":/state \
+		-e HOME=/state \
 		-e FT_PASSPHRASE=v30-isolation-pass -e FT_CONFIG=/state/config.json \
 		-e FT_KEYSTORE=/state/keystore.v42 "$IMG" sh -c "set -e; B=/c/debug/42ctl; $*"
 }

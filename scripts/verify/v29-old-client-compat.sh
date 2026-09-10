@@ -41,7 +41,8 @@ OLDDIR="$WORK/oldc"
 skip() { printf 'SKIP v29: %s\n' "$1"; exit 2; }
 fail() { printf 'FAIL v29: %s\n' "$1" >&2; exit 1; }
 
-# Containers write as root, so the workdir is cleared from a container rather than by this user.
+# The old client's target volume is root-owned from its build, so the workdir is cleared from a
+# container rather than by this user. The client containers themselves run as the invoking user.
 cleanup() {
 	docker rm -fv "$SRV" >/dev/null 2>&1 || true
 	docker network rm "$NET" >/dev/null 2>&1 || true
@@ -105,11 +106,19 @@ start_server() {
 # Both clients run against ONE keystore and ONE project directory on the host, because the
 # question is what a single operator's project looks like across an upgrade — not what two
 # different identities can do.
+# Runs as the INVOKING USER, not docker's default root. A pull writes the project tree, and a
+# root-owned tree is one the host assertions below cannot read: a restored 0600 file is
+# unreadable, and since a restored directory is 0700 the host cannot even traverse into it, so
+# `[ -f secrets/db_password.txt ]` reports a file that is sitting right there. That surfaces as
+# a compatibility failure and is really permission denied. The QA harness runs its client the
+# same way, for the same reason.
 client() {
 	bin_mount="$1"
 	bin_path="$2"
 	shift 2
-	docker run --rm --network "$NET" -v "$bin_mount" -v "$WORK/state":/state \
+	docker run --rm --network "$NET" --user "$(id -u):$(id -g)" \
+		-v "$bin_mount" -v "$WORK/state":/state \
+		-e HOME=/state \
 		-e FT_PASSPHRASE=v29-compat-pass -e FT_CONFIG=/state/config.json \
 		-e FT_KEYSTORE=/state/keystore.v42 "$IMG" sh -c "set -e; B=$bin_path; $*"
 }
@@ -178,7 +187,7 @@ pull_with_the_current_client() {
 assert_the_project_upgrades_in_place() {
 	new_client 'cd /state/proj && $B push --project compat' >"$WORK/new-push.log" 2>&1 ||
 		{ cat "$WORK/new-push.log"; fail "the current client could not push over an old project"; }
-	docker run --rm -v "$WORK/state":/state "$IMG" sh -c 'rm -rf /state/proj/secrets' >/dev/null
+	docker run --rm --user "$(id -u):$(id -g)" -v "$WORK/state":/state "$IMG" sh -c 'rm -rf /state/proj/secrets' >/dev/null
 	[ ! -d "$WORK/state/proj/secrets" ] || fail "the second wipe left secrets/ behind"
 	new_client 'cd /state/proj && $B pull --project compat --apply' \
 		>"$WORK/new-pull2.log" 2>&1 ||
