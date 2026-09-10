@@ -129,6 +129,7 @@ impl Store {
             revoke_all_user_grants(&tx, &account_id, now)?;
             revoke_pending_invites(&tx, &account_id)?;
             drop_all_memberships(&tx, &account_id)?;
+            release_tenants(&tx, &account_id)?;
             if tombstone(&tx, &account_id)? == 0 {
                 return Err(Error::NotFound);
             }
@@ -240,6 +241,24 @@ fn revoke_all_user_grants(conn: &rusqlite::Connection, account_id: &str, now: i6
 fn revoke_pending_invites(conn: &rusqlite::Connection, account_id: &str) -> Result<()> {
     conn.execute(
         "UPDATE invites SET status='revoked' WHERE invited_by=?1 AND status='pending'",
+        params![account_id],
+    )
+    .map_err(|e| Error::Internal(e.into()))?;
+    Ok(())
+}
+
+/// Release every tenant name the account claimed, so the name is free to claim again.
+///
+/// The row is DELETED rather than emptied, which is the opposite of what happens to the
+/// account itself, and deliberately so: a tenant row records no history of who did what, it
+/// is purely a live reservation on a name. Keeping it would preserve nothing and would leave
+/// the name permanently unusable by anyone — the state 42ctl's `account delete` help had to
+/// warn about, because a name outlived the only account that could ever present its key.
+/// The schema's `ON DELETE SET NULL` does not cover this: the account row is tombstoned, not
+/// deleted, so the cascade never fires.
+fn release_tenants(conn: &rusqlite::Connection, account_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM tenants WHERE account_id=?1",
         params![account_id],
     )
     .map_err(|e| Error::Internal(e.into()))?;

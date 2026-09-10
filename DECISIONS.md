@@ -146,3 +146,53 @@ deleted (deletion-gate discipline); it remains a thin reference client. The cryp
 crates.io (a gated, irreversible step), `42ctl` depends on it — and on `vault42-proto` (the
 contract client) — via **pinned git dependencies** at tag `v0.1.1`, never a copy. Full 42ctl
 reconciliation + decisions live in that repo's `DECISIONS.md`.
+
+## D13 — The contract is issued to an ACCOUNT, not to a shared string
+
+`/v1/register` is the most powerful route the authority has: it claims a tenant name and
+issues the signed contract that `vault42-server` accepts as authorization to write. Until
+now it was the only significant route that took no `Principal`. It was guarded instead by
+`VAULT42_REGISTER_TOKEN`, one shared static string checked in constant time.
+
+That put the weakest credential in front of the strongest capability, while the account
+layer built for exactly this job — accounts, sessions, a `Principal` extractor that makes a
+route authenticated by construction — sat unused beside it. The shared token has no
+identity, no revocation, no expiry and no audit trail: it cannot say who registered, cannot
+be withdrawn from one person, and once leaked is leaked permanently. It also failed
+operationally in the most ordinary way possible — the operator no longer had the value, and
+because fly and GitHub both store secrets write-only, nothing could read it back. A valid
+account with a valid session could not obtain a contract.
+
+**Decided.** `register` takes `Principal`. The contract is issued to the authenticated
+account, and the tenant row records `account_id` as owner (the column already existed and
+was always written `NULL`). Three consequences follow from ownership:
+
+- **The owner may re-key.** Re-claiming a name you own rebinds it to the presented key.
+  Previously a lost keystore stranded the name forever: the old fingerprint could never be
+  presented again and no path anywhere released it.
+- **Deleting an account releases its names.** `release_tenants` deletes the rows inside
+  `erase_account`'s transaction. The schema's `ON DELETE SET NULL` never fired, because the
+  account row is tombstoned rather than deleted — which is why 42ctl's `account delete` help
+  had to warn that a tenant name outlives the account and nothing releases one.
+- **A quota bounds squatting.** `VAULT42_MAX_TENANTS_PER_ACCOUNT` (default 8). This is what
+  replaces the shared token's role of limiting how much one party can take, and it is
+  enforced inside the same serialized connection as the claim, so concurrent claims cannot
+  both pass it.
+
+**Admission control moves to `signup`, and that is the point rather than a side effect.**
+The gate exists to bound who enters the system at all, and `signup` is the only route an
+unauthenticated stranger can reach. `VAULT42_REGISTER_TOKEN` is still honoured, still
+compared in constant time, still optional — it is simply checked where the anonymous caller
+actually is. Gating `register` while leaving `signup` open had it backwards: anyone could
+create an account, and the hard step was the authenticated one.
+
+**The trade-off, stated plainly.** On a deployment with the token unset, registration is now
+reachable by anyone who can create an account, where before it needed the shared secret. The
+mitigations are the quota, the fact that an account is revocable and attributable where a
+string is neither, and `VAULT42_REGISTER_TOKEN` at signup for any deployment that wants a
+closed door. An operator who wants the old posture sets that variable and gets a strictly
+better version of it, because now they can also see and revoke who came through.
+
+Falsified before being trusted, per `.claude/rules/verify-gates.md`: removing
+`release_tenants` turns `deleting_an_account_releases_its_tenant_names` red (409 vs 200), and
+disabling the quota check turns `an_account_may_not_hoard_tenant_names` red (200 vs 403).

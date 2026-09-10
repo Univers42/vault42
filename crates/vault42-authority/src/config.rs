@@ -27,6 +27,9 @@ pub struct Config {
     pub contract_ttl_days: i64,
     pub session_ttl_secs: i64,
     pub register_token: Option<String>,
+    /// How many tenant names one account may hold. Bounds squatting now that any
+    /// authenticated account may register, where the shared token bounded it before.
+    pub max_tenants_per_account: usize,
     pub otp: OtpConfig,
     pub mail: MailConfig,
     pub github: GithubConfig,
@@ -98,6 +101,7 @@ impl Config {
             contract_ttl_days: parse_or("VAULT42_CONTRACT_TTL_DAYS", 365),
             session_ttl_secs: parse_or("VAULT42_AUTHORITY_SESSION_TTL_SECS", 86_400),
             register_token: std::env::var("VAULT42_REGISTER_TOKEN").ok(),
+            max_tenants_per_account: parse_or("VAULT42_MAX_TENANTS_PER_ACCOUNT", 8) as usize,
             otp: OtpConfig {
                 proof_secret: otp_proof_secret(),
                 ttl_secs: parse_or("VAULT42_OTP_TTL_SECS", 300),
@@ -202,6 +206,7 @@ mod tests {
             contract_ttl_days: 365,
             session_ttl_secs: 3600,
             register_token: None,
+            max_tenants_per_account: 8,
             otp: OtpConfig {
                 proof_secret: Some(b"secret".to_vec()),
                 ttl_secs: 300,

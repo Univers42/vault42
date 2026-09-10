@@ -630,6 +630,7 @@ async fn an_unconfigured_authority_refuses_to_issue_codes() {
         .expect("authority"),
         session_ttl_secs: 3600,
         register_token: None,
+        max_tenants_per_account: 8,
         otp: crate::config::OtpConfig {
             proof_secret: None,
             ttl_secs: 300,

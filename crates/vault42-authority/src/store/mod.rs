@@ -33,7 +33,7 @@ mod pubkeys;
 mod secondfactor;
 mod sessions;
 mod teams;
-mod tenants;
+pub mod tenants;
 mod variables;
 mod wraps;
 

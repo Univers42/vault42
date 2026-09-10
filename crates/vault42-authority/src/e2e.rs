@@ -67,6 +67,7 @@ pub(crate) fn fresh_app(tag: &str, register_token: Option<&str>) -> Arc<App> {
         authority: Authority::open(None, &key, 365).expect("load authority"),
         session_ttl_secs: 3600,
         register_token: register_token.map(str::to_string),
+        max_tenants_per_account: 8,
         otp: crate::config::OtpConfig {
             proof_secret: Some(PROOF_SECRET.as_bytes().to_vec()),
             ttl_secs: 300,
@@ -536,13 +537,34 @@ async fn passwd_enforces_the_length_rule_on_the_new_password() {
 }
 
 #[tokio::test]
-async fn register_issues_a_contract_that_verifies_against_the_published_key() {
-    let app = fresh_app("register", None);
-    let pubkey = author_pubkey();
-    let (status, body) = send(
+async fn register_refuses_an_unauthenticated_caller() {
+    let app = fresh_app("regnoauth", None);
+    let (status, _) = send(
         &app,
         post(
             "/v1/register",
+            json!({"tenant": "alice", "author_pubkey": author_pubkey()}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "registration must require a session: it issues a contract, which is the most \
+         powerful thing the authority hands out"
+    );
+}
+
+#[tokio::test]
+async fn register_issues_a_contract_that_verifies_against_the_published_key() {
+    let app = fresh_app("register", None);
+    let token = signed_up(&app, "alice@example.com").await;
+    let pubkey = author_pubkey();
+    let (status, body) = send(
+        &app,
+        post_as(
+            "/v1/register",
+            &token,
             json!({"tenant": "alice", "author_pubkey": pubkey}),
         ),
     )
@@ -550,11 +572,11 @@ async fn register_issues_a_contract_that_verifies_against_the_published_key() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["tenant"], "alice");
 
-    let token = body["contract"].as_str().expect("contract token");
+    let contract_token = body["contract"].as_str().expect("contract token");
     let key_hex = app.authority.public_hex();
     let key: [u8; 32] = hex::decode(&key_hex).unwrap().try_into().unwrap();
     let contract =
-        vault42_core::verify_contract(&key, token, now_unix()).expect("contract verifies");
+        vault42_core::verify_contract(&key, contract_token, now_unix()).expect("contract verifies");
     assert_eq!(contract.tenant, "alice");
     let expected_fp = vault42_core::fingerprint(&hex::decode(&pubkey).unwrap().try_into().unwrap());
     assert_eq!(
@@ -565,24 +587,28 @@ async fn register_issues_a_contract_that_verifies_against_the_published_key() {
 }
 
 #[tokio::test]
-async fn re_registering_the_same_key_is_idempotent_but_a_different_key_cannot_steal() {
+async fn the_owning_account_may_re_key_but_another_account_cannot_steal() {
     let app = fresh_app("steal", None);
-    let mine = author_pubkey();
-    let theirs = author_pubkey();
+    let mine = signed_up(&app, "mine@example.com").await;
+    let theirs = signed_up(&app, "theirs@example.com").await;
+    let first = author_pubkey();
     let (status, _) = send(
         &app,
-        post(
+        post_as(
             "/v1/register",
-            json!({"tenant": "acme", "author_pubkey": mine}),
+            &mine,
+            json!({"tenant": "acme", "author_pubkey": first}),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+
     let (status, _) = send(
         &app,
-        post(
+        post_as(
             "/v1/register",
-            json!({"tenant": "acme", "author_pubkey": mine}),
+            &mine,
+            json!({"tenant": "acme", "author_pubkey": first}),
         ),
     )
     .await;
@@ -591,31 +617,142 @@ async fn re_registering_the_same_key_is_idempotent_but_a_different_key_cannot_st
         StatusCode::OK,
         "the same key may refresh its contract"
     );
+
+    let replacement = author_pubkey();
     let (status, body) = send(
         &app,
-        post(
+        post_as(
             "/v1/register",
-            json!({"tenant": "acme", "author_pubkey": theirs}),
+            &mine,
+            json!({"tenant": "acme", "author_pubkey": replacement}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the owning account must be able to rebind its own name to a fresh key; without \
+         this a lost keystore stranded the name forever"
+    );
+    let key: [u8; 32] = hex::decode(app.authority.public_hex())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let contract =
+        vault42_core::verify_contract(&key, body["contract"].as_str().unwrap(), now_unix())
+            .expect("contract verifies");
+    let expected =
+        vault42_core::fingerprint(&hex::decode(&replacement).unwrap().try_into().unwrap());
+    assert_eq!(
+        contract.author_fp, expected,
+        "the re-keyed contract must bind the NEW key, not the old one"
+    );
+
+    let (status, body) = send(
+        &app,
+        post_as(
+            "/v1/register",
+            &theirs,
+            json!({"tenant": "acme", "author_pubkey": author_pubkey()}),
         ),
     )
     .await;
     assert_eq!(
         status,
         StatusCode::CONFLICT,
-        "a different key must not take the name"
+        "a different account must not take the name"
     );
     assert_eq!(body["error"], "tenant name is taken");
 }
 
 #[tokio::test]
+async fn an_account_may_not_hoard_tenant_names() {
+    let app = fresh_app("quota", None);
+    let token = signed_up(&app, "hoarder@example.com").await;
+    for n in 0..app.max_tenants_per_account {
+        let (status, _) = send(
+            &app,
+            post_as(
+                "/v1/register",
+                &token,
+                json!({"tenant": format!("name{n}"), "author_pubkey": author_pubkey()}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "claim {n} is within the quota");
+    }
+    let (status, _) = send(
+        &app,
+        post_as(
+            "/v1/register",
+            &token,
+            json!({"tenant": "one-too-many", "author_pubkey": author_pubkey()}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the quota is what bounds squatting now that any account may register"
+    );
+}
+
+#[tokio::test]
+async fn deleting_an_account_releases_its_tenant_names() {
+    let app = fresh_app("release", None);
+    let mine = signed_up(&app, "leaving@example.com").await;
+    let (status, _) = send(
+        &app,
+        post_as(
+            "/v1/register",
+            &mine,
+            json!({"tenant": "handover", "author_pubkey": author_pubkey()}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = send(
+        &app,
+        Request::builder()
+            .method("DELETE")
+            .uri("/v1/auth/account")
+            .header("authorization", format!("Bearer {mine}"))
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the account is deleted");
+
+    let successor = signed_up(&app, "successor@example.com").await;
+    let (status, _) = send(
+        &app,
+        post_as(
+            "/v1/register",
+            &successor,
+            json!({"tenant": "handover", "author_pubkey": author_pubkey()}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a released name must be claimable again; leaving it reserved forever is the wart \
+         42ctl's `account delete` help had to warn about"
+    );
+}
+
+#[tokio::test]
 async fn register_validates_the_tenant_name_and_the_author_key() {
     let app = fresh_app("regvalidate", None);
+    let token = signed_up(&app, "validate@example.com").await;
     let pubkey = author_pubkey();
     for tenant in ["", "has space", "has/slash", &"x".repeat(65)] {
         let (status, _) = send(
             &app,
-            post(
+            post_as(
                 "/v1/register",
+                &token,
                 json!({"tenant": tenant, "author_pubkey": pubkey}),
             ),
         )
@@ -629,8 +766,9 @@ async fn register_validates_the_tenant_name_and_the_author_key() {
     for key in ["", "nothex", &"aa".repeat(31), &"00".repeat(32)] {
         let (status, _) = send(
             &app,
-            post(
+            post_as(
                 "/v1/register",
+                &token,
                 json!({"tenant": "ok", "author_pubkey": key}),
             ),
         )
@@ -644,46 +782,66 @@ async fn register_validates_the_tenant_name_and_the_author_key() {
 }
 
 #[tokio::test]
-async fn the_invite_gate_admits_only_the_configured_token() {
+async fn the_invite_gate_admits_only_the_configured_token_at_signup() {
     let app = fresh_app("invite", Some("s3cret-invite"));
-    let pubkey = author_pubkey();
-    let (status, _) = send(
-        &app,
-        post(
-            "/v1/register",
-            json!({"tenant": "gated", "author_pubkey": pubkey}),
-        ),
-    )
-    .await;
+    let creds = |token: Option<&str>| match token {
+        Some(t) => json!({"email": "gated@example.com", "password": PASSWORD, "token": t}),
+        None => json!({"email": "gated@example.com", "password": PASSWORD}),
+    };
+    let (status, _) = send(&app, post("/v1/auth/signup", creds(None))).await;
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
         "a missing token must be refused"
     );
-    let (status, _) = send(
-        &app,
-        post(
-            "/v1/register",
-            json!({"tenant": "gated", "author_pubkey": pubkey, "token": "wrong"}),
-        ),
-    )
-    .await;
+    let (status, _) = send(&app, post("/v1/auth/signup", creds(Some("wrong")))).await;
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
         "a wrong token must be refused"
     );
+    let (status, _) = send(&app, post("/v1/auth/signup", creds(Some("s3cret-invite")))).await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "the configured token must be admitted"
+    );
+}
+
+#[tokio::test]
+async fn the_invite_gate_does_not_stand_between_an_account_and_its_contract() {
+    let app = fresh_app("invitereg", Some("s3cret-invite"));
     let (status, _) = send(
         &app,
         post(
+            "/v1/auth/signup",
+            json!({"email": "in@example.com", "password": PASSWORD, "token": "s3cret-invite"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (_, body) = send(
+        &app,
+        post(
+            "/v1/auth/login",
+            json!({"email": "in@example.com", "password": PASSWORD}),
+        ),
+    )
+    .await;
+    let token = body["token"].as_str().expect("token").to_string();
+    let (status, _) = send(
+        &app,
+        post_as(
             "/v1/register",
-            json!({"tenant": "gated", "author_pubkey": pubkey, "token": "s3cret-invite"}),
+            &token,
+            json!({"tenant": "admitted", "author_pubkey": author_pubkey()}),
         ),
     )
     .await;
     assert_eq!(
         status,
         StatusCode::OK,
-        "the configured token must be admitted"
+        "once admitted, an account reaches its contract with no second copy of the shared \
+         secret; holding the token twice is what locked the operator out"
     );
 }

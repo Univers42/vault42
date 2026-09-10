@@ -25,6 +25,7 @@ pub struct App {
     pub authority: Authority,
     pub session_ttl_secs: i64,
     pub register_token: Option<String>,
+    pub max_tenants_per_account: usize,
     pub otp: OtpConfig,
     pub mail: MailConfig,
     pub github: GithubConfig,

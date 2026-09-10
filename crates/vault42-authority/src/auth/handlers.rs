@@ -42,6 +42,11 @@ pub struct Credentials {
     password: String,
     #[serde(default)]
     otp_proof: Option<String>,
+    /// The shared invite token, when the authority configures one. Only `signup` reads it:
+    /// it is the one route an unauthenticated stranger can reach, so it is where admission
+    /// control belongs.
+    #[serde(default)]
+    token: Option<String>,
 }
 
 /// Password-change request body.
@@ -102,6 +107,7 @@ pub async fn signup(
     State(app): State<Arc<App>>,
     Json(body): Json<Credentials>,
 ) -> Result<(StatusCode, Json<SignupResp>)> {
+    crate::contract::check_invite(&app, body.token.as_deref())?;
     let email = validate::normalize_email(&body.email).map_err(Error::BadRequest)?;
     let secret = Zeroizing::new(body.password);
     validate::check_password(&secret).map_err(Error::BadRequest)?;

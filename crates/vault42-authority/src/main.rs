@@ -124,7 +124,7 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
     tracing::info!(
         public_key = %authority.public_hex(),
         bind = %cfg.bind,
-        invite_gate = cfg.register_token.is_some(),
+        signup_gate = cfg.register_token.is_some(),
         second_factors = cfg.second_factors_enabled(),
         "vault42-authority up — set public_key as vault42 VAULT42_CONTRACT_PUBKEY"
     );
@@ -133,6 +133,7 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
         authority,
         session_ttl_secs: cfg.session_ttl_secs,
         register_token: cfg.register_token,
+        max_tenants_per_account: cfg.max_tenants_per_account,
         otp: cfg.otp,
         mail: cfg.mail,
         github: cfg.github,

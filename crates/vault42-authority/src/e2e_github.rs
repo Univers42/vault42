@@ -88,6 +88,7 @@ fn pointed_at(app: &Arc<App>, base: &str) -> Arc<App> {
         .expect("authority"),
         session_ttl_secs: app.session_ttl_secs,
         register_token: None,
+        max_tenants_per_account: 8,
         otp: crate::config::OtpConfig {
             proof_secret: app.otp.proof_secret.clone(),
             ttl_secs: app.otp.ttl_secs,
