@@ -120,6 +120,34 @@ on the new-epoch revision is covered there and not by a vault42 gate.
   per-tenant opt-in as secrets (R1/R11), and audited; a scope key never silently inherits recovery
   escrow.
 
+### Reachability of the group model (R26)
+
+- **R26 The entire organization model is unreachable on the deployed stack** — every RBAC verb
+  (`org`, `team`, `group`, `env`, `project`, `invite`, pubkey registration, grants) needs a SESSION
+  token. `42ctl auth login` saves a CONTRACT and never a session, with or without `--email`; the
+  only code path that saves one is the GitHub device flow. The deployed authority answers
+  `POST /v1/github/device/start` with `{"error":"GitHub sign-in is not configured here"}` and has
+  no `GITHUB_CLIENT_ID` among its secrets.
+
+  So on the running system today an operator cannot create an organization, a team, a project, an
+  environment or a grant at all. **Status:** LIVE, and it is the gap between "the group model is
+  built and tested" and "people can use it".
+
+  **This is the largest instance of complete-and-unreachable in either repository.** The model is
+  implemented, 40 assertions pass against a local authority, and none of it can be exercised where
+  it is deployed. Local runs pass because the OAuth base is configurable and can point at a stub;
+  production has nothing to point at.
+
+  What is verified live is enrolment: two people sign up, log in and receive contracts from the
+  deployed authority (`scripts/smoke/team-live.sh`). That script deliberately SKIPS with the reason
+  rather than passing, because a script that stopped there and printed PASS would report that the
+  group flow works.
+
+  **The fix is one configuration value and it is not ours to create**: a GitHub OAuth App is made
+  through a browser. Until then the two items long listed as optional — the OAuth client id, and
+  proven mail delivery — are not optional extras. They are the only two doors to a session, and
+  without one of them the vault is a single-operator tool.
+
 ### Project layout (R25)
 
 - **R25 A submodule parked under a dependency directory is dropped, silently** — the client's scan
