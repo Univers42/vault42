@@ -424,6 +424,79 @@ on the new-epoch revision is covered there and not by a vault42 gate.
 
 ### Chunk deduplication (R19)
 
+- **R19 Deduplication tells the store which chunks are equal** — a chunk is named by a keyed digest
+  of its plaintext under a key derived from the environment's scope secret, and a writer that finds
+  the name already present uploads nothing. Whoever runs the object store therefore learns the
+  equality relation over chunks: how much an environment's members share, and how many distinct
+  chunks sit behind a deduplicated count.
+  **Scope of the leak:** bounded to one environment. The naming key descends from that
+  environment's scope secret, so the same bytes in two environments produce two unrelated names.
+  **Status:** accepted, and chosen over per-tenant scope with the cost stated.
+
+  **The mechanism is NOT the one an earlier version of this entry described.** It said identical
+  plaintext produced identical ciphertext through a convergent sealer in `vault42-core`. That
+  sealer existed, was never called by anything, and has been deleted. Identical NAMES turn out to
+  be sufficient: the second writer finds the name present and stores nothing, and any member can
+  open the single copy because it is sealed to the ENVIRONMENT rather than to a person. The
+  already-present check does the work convergent encryption was going to do, without giving up a
+  random nonce.
+
+  Recorded at this length because a threat model describing a construction nobody uses is the same
+  defect as a comment asserting a property the code lacks, and this file has been full of those.
+
+- **R19a A departed member keeps a confirmation oracle** — survives the change of mechanism intact.
+  Anyone holding the scope secret can compute the NAME for a plaintext they can guess and look for
+  it, which is the same oracle by a different route. Removing somebody from the environment does
+  not take the secret out of their hands. **Mitigation:** `rotate-scope` after any removal, which
+  the offboarding path already says is required. **Status:** live whenever an operator skips it.
+
+- **R19b A member can poison a shared chunk** — and deduplication is what creates the route rather
+  than merely exposing it. A member may seal honestly FOR a name while putting unrelated bytes
+  inside; every later writer of that content then finds the name present, stores nothing, and
+  restores the poisoner's bytes. Valid seal, valid signature, correct secret id, nothing else
+  notices. **Mitigation:** the reader recomputes the name from the recovered plaintext and refuses
+  a mismatch. **Status:** mitigated in the client's `open_chunk`.
+
+  The reason that check is needed is sharper than "the cipher demands it": deduplication makes one
+  member's stored bytes into every member's stored bytes, and at that point "who wrote this" stops
+  being answerable from outside the plaintext.
+
+### Tenant claims (R20)
+
+- **R20 Nothing ever releases a tenant name** — `/v1/register` calls `claim_tenant`, which inserts
+  a row keyed on the name and holding the claiming author's fingerprint
+  (`crates/vault42-authority/src/store/tenants.rs:29`). There is no delete, release or unclaim
+  anywhere in the store. A re-registration succeeds only when it presents the SAME fingerprint,
+  so a name whose keystore is lost is permanently unusable by anybody, including the person who
+  registered it, with no operator recourse. This is R18 seen from the other side: losing the
+  passphrase loses the identity, and the name goes with it.
+  **Status:** live. The mitigation is to pick a new name.
+
+- **R20a Deleting an account orphans its tenant claims rather than releasing them** — the schema
+  declares `account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL`
+  (`store/migrate.rs:48`), and `erase_account` touches grants, invites, memberships and the
+  account tombstone but never the `tenants` table (`store/offboard.rs:124`). So
+  `42ctl account delete --yes` reports success and leaves the name claimed by a fingerprint that
+  may no longer belong to a living account. Signing up again with a new keystore and trying to
+  reclaim your own tenant answers 409 Conflict, and nothing in that answer explains why.
+  **Status:** live, and it is the deletion path's most surprising residue.
+
+  Releasing the claim would be safe with respect to DATA, which is worth recording because it is
+  the first thing to worry about: the server derives an owner id from the author key's
+  fingerprint and not from the tenant (`vault42-server/src/principal.rs:29`), so a new holder of
+  a released name reads a different namespace and inherits nothing. What release would create is
+  two parties who each believe they hold one name, both with contracts that verify. Which of
+  those costs is worse is a product decision, so nothing here changes the semantics.
+
+- **R20b Automated runs burn a name each** — `scripts/smoke/inception-live.sh` registers a fresh
+  tenant per run because reusing one would need a committed keystore, and the claim is idempotent
+  only for the same fingerprint. Each run therefore leaves one permanent row. It is a few hundred
+  bytes on a 1 GB volume and the namespace is 64 arbitrary characters wide, so the practical cost
+  is nil; it is recorded because "the test cannot clean up after itself" should be a known
+  property rather than a discovery.
+
+### Chunk deduplication (R19)
+
 - **R19 Deterministic chunk sealing tells the store which chunks are equal** — `seal_chunk`
   (`crates/vault42-core/src/chunk.rs`) deliberately abandons the random nonce that every other
   seal in the crate uses. Identical plaintext under one environment's scope secret produces

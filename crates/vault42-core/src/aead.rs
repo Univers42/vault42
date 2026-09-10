@@ -15,12 +15,11 @@
 //! collision-safe by construction, so callers may always pick a fresh random
 //! nonce (no counter state, no reuse hazard — THREAT-MODEL R10).
 //!
-//! "always" was true of every caller until `chunk.rs`, and is not any more. Chunk sealing
-//! derives its nonce deterministically so that identical plaintext yields identical ciphertext
-//! and one environment stores shared bytes once (THREAT-MODEL R19). That is a deliberate trade
-//! of a privacy property for storage, not a caller getting the rule wrong, and it is safe for
-//! the same reason random nonces are: the collision bound is 192 bits either way. A caller
-//! choosing a deterministic nonce must be able to say why, and only `chunk.rs` can.
+//! That was qualified for a while by a deterministic-nonce chunk sealer, which has been deleted:
+//! deduplication turned out to need identical NAMES rather than identical ciphertext, so nothing
+//! in this crate derives a nonce any more. The rule is unconditional again, and a future caller
+//! proposing to weaken it should have to argue for it rather than find the exception already
+//! written here (THREAT-MODEL R19).
 
 use crate::error::{Error, Result};
 use chacha20poly1305::aead::{Aead, Payload};

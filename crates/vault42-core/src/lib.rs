@@ -27,7 +27,6 @@
 
 mod aad;
 mod aead;
-mod chunk;
 mod contract;
 mod envelope;
 mod error;
@@ -46,7 +45,6 @@ mod request;
 mod seal;
 mod sign;
 
-pub use chunk::{open_chunk, seal_chunk, SealedChunk};
 pub use contract::{issue_contract, verify_contract, Contract};
 pub use envelope::Envelope;
 pub use error::{Error, Result};
