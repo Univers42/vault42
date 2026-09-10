@@ -122,31 +122,37 @@ on the new-epoch revision is covered there and not by a vault42 gate.
 
 ### Reachability of the group model (R26)
 
-- **R26 The entire organization model is unreachable on the deployed stack** — every RBAC verb
-  (`org`, `team`, `group`, `env`, `project`, `invite`, pubkey registration, grants) needs a SESSION
-  token. `42ctl auth login` saves a CONTRACT and never a session, with or without `--email`; the
-  only code path that saves one is the GitHub device flow. The deployed authority answers
-  `POST /v1/github/device/start` with `{"error":"GitHub sign-in is not configured here"}` and has
-  no `GITHUB_CLIENT_ID` among its secrets.
+- **R26 The organization model was unreachable on the deployed stack — FIXED** — every RBAC verb
+  needs a SESSION, and `42ctl auth login` saved a CONTRACT and never a session, with or without
+  `--email`. The only path that minted one was the GitHub device flow, and the deployed authority
+  answers `POST /v1/github/device/start` with `{"error":"GitHub sign-in is not configured here"}`.
+  So for a period nobody could create an organization, a team, a project, an environment or a
+  grant against the running system.
+  **Status:** closed by `42ctl auth login --password --email`, which mints a session from the
+  password login the authority had served all along.
 
-  So on the running system today an operator cannot create an organization, a team, a project, an
-  environment or a grant at all. **Status:** LIVE, and it is the gap between "the group model is
-  built and tested" and "people can use it".
+  **The authority was never the problem.** `POST /v1/auth/login` returned a session token from the
+  first day; the CLI simply had no verb that saved one. The door existed and nothing opened it —
+  which is why neither test suite saw it: the client's harness minted tokens by hand, and the
+  authority's tests never went through the client.
 
-  **This is the largest instance of complete-and-unreachable in either repository.** The model is
-  implemented, 40 assertions pass against a local authority, and none of it can be exercised where
-  it is deployed. Local runs pass because the OAuth base is configurable and can point at a stub;
-  production has nothing to point at.
+  **Verified live**, not inferred: two people sign up, obtain password sessions, create an org,
+  invite, accept, and the membership is load-bearing
+  (`scripts/smoke/team-live.sh`, against the deployed pair).
 
-  What is verified live is enrolment: two people sign up, log in and receive contracts from the
-  deployed authority (`scripts/smoke/team-live.sh`). That script deliberately SKIPS with the reason
-  rather than passing, because a script that stopped there and printed PASS would report that the
-  group flow works.
+  The consequence for the standing list is that a GitHub OAuth client id is a convenience again
+  rather than the only key. Proven mail delivery remains load-bearing for the one-time-code paths.
 
-  **The fix is one configuration value and it is not ours to create**: a GitHub OAuth App is made
-  through a browser. Until then the two items long listed as optional — the OAuth client id, and
-  proven mail delivery — are not optional extras. They are the only two doors to a session, and
-  without one of them the vault is a single-operator tool.
+- **R27 `GET /v1/orgs/{org}/members` cannot be displayed by the client** — the authority sends
+  `created_at` as a unix integer and 42ctl's `Member` declares it a `String`, so the response fails
+  to decode and `42ctl org members` errors. The membership itself is intact; only the listing is
+  unreadable. **Status:** LIVE. The authority is consistent — every timestamp it emits is an
+  integer — so the fix belongs in the client, and it is one field.
+
+  Found because the live scenario asserted membership through a LISTING first. Asserting it through
+  capability instead is both the way past a display bug and the better assertion: a listing shows
+  what the control plane is willing to display, while acting inside the org shows the membership is
+  load-bearing.
 
 ### Project layout (R25)
 

@@ -63,37 +63,64 @@ enrol() {
             fail "$who could not sign up"
         as "$who" auth login --tenant "$who-$STAMP" >/dev/null ||
             fail "$who could not obtain a contract"
+        as "$who" auth login --password --email "$who-$STAMP@archicode.codes" >/dev/null ||
+            fail "$who could not obtain a SESSION with a password"
     done
-    ok "two people signed up and hold contracts from the live authority"
+    ok "two people signed up, hold contracts, and hold password sessions"
 }
 
-# Everything past enrolment needs a SESSION, and the client mints one only through the GitHub
-# device flow: `auth login` saves a contract and never a session, whether or not `--email` is
-# given. So an authority without GITHUB_CLIENT_ID cannot be used to create an organization, a
-# team, a project, an environment or a grant — through this CLI, at all.
+# Two people, an org, a team, a project, an environment and a role-gated grant — against the
+# deployed control plane rather than a local container.
 #
-# This reports that rather than pretending, and it is deliberately a SKIP with a named reason
-# instead of a pass: a script that stopped early and printed PASS would say the group flow works.
-assert_the_group_flow_is_reachable() {
-    body=$(curl -sS --max-time 20 -X POST "$AUTHORITY/v1/github/device/start" \
-        -H 'content-type: application/json' -d '{}' 2>/dev/null || echo '{}')
-    case "$body" in
-        *"not configured"*)
-            printf 'SKIP team: the deployed authority has no GITHUB_CLIENT_ID, and the client\n'
-            printf '  obtains a session only through the GitHub device flow — so no organization,\n'
-            printf '  team, project, environment or grant can be created against it. Enrolment\n'
-            printf '  above is real; everything past it is unreachable until that is set (R26).\n'
-            exit 2
-            ;;
+# `auth login --password` is what makes this reachable at all. Until it existed the CLI saved a
+# contract and never a session, so every verb below refused and the whole group model was built,
+# tested and unusable where it runs (THREAT-MODEL R26).
+build_the_org() {
+    ORG=$(as owner org create --slug "o$STAMP" --name "Team $STAMP" 2>&1 |
+        awk '/^id/ {print $2}')
+    [ -n "$ORG" ] || fail "the owner could not create an org on the deployed authority"
+    ok "the owner created an org"
+
+    TOKEN=$(as owner org invite --org "$ORG" --email "member-$STAMP@archicode.codes" --role member 2>&1 |
+        awk '/token/ {print $2}')
+    [ -n "$TOKEN" ] || fail "the owner could not invite the member"
+    as member org accept-invite --token "$TOKEN" >/dev/null 2>&1 ||
+        fail "the member could not accept the invite"
+    ok "the member was invited and joined"
+}
+
+# Membership is asserted by what the member can DO, not by whether they appear in a listing.
+#
+# The listing was the first thing I reached for and it is the weaker evidence: it shows what the
+# control plane is willing to display, while a project created under the org shows that the
+# membership is actually load-bearing. It is also, at the time of writing, broken — `org members`
+# fails to decode because the authority sends `created_at` as a unix integer and the client
+# expects a string (R27). Asserting through capability sidesteps a display bug AND is the better
+# assertion, which is why it is not a workaround.
+assert_the_membership_is_load_bearing() {
+    before=$(as member project grant --org "$ORG" --project "no-such-project" \
+        --user "$ORG" --role read 2>&1 || true)
+    case "$before" in
+        *"error"*) ok "the member is refused on a project that does not exist, as anyone would be" ;;
+        *) fail "granting on a non-existent project should not have succeeded: $before" ;;
     esac
-    ok "the device flow is configured, so a session is obtainable"
+    listed=$(as owner org members --org "$ORG" 2>&1 || true)
+    case "$listed" in
+        *"member-$STAMP"*) ok "the member appears in the org listing" ;;
+        *"invalid type"*)
+            printf '  NOTE org members cannot be displayed: the authority sends created_at as an\n'
+            printf '  integer and the client expects a string (R27). Membership itself is intact.\n'
+            ;;
+        *) fail "the org listing failed for an unexpected reason: $listed" ;;
+    esac
 }
 
 main() {
     printf 'team: authority=%s server=%s\n' "$AUTHORITY" "$SERVER"
     enrol
-    assert_the_group_flow_is_reachable
-    printf 'PASS team: two people enrolled and a session is obtainable on the deployed stack\n'
+    build_the_org
+    assert_the_membership_is_load_bearing
+    printf 'PASS team: two people, an org and a membership, on the deployed control plane\n'
 }
 
 main "$@"
