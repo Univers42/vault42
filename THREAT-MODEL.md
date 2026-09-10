@@ -176,6 +176,34 @@ on the new-epoch revision is covered there and not by a vault42 gate.
   from the derivation until `v30` made it a test: each project restores its own bytes, a nested
   module keeps its own `secrets/` at mode 600, and neither tree appears inside the other.
 
+### Sharing (R29)
+
+- **R29 Nothing revokes a share once it has been handed out** — `Share` re-seals a secret to a
+  second recipient, so the recipient holds their OWN envelope in their own namespace. Rotating the
+  owner's copy mints a new DEK for the owner and does not reach it. There is no `revoke`, no
+  `unshare`, and no verb anywhere that removes it.
+  **Status:** LIVE, and it is a MISSING FEATURE rather than a defect — nothing in the product
+  claims it works. Recorded here because a threat model that omits a missing protection is the
+  same failure as one that claims a protection it lacks, and this had been carried as a loose note
+  rather than written down.
+
+  **The design, agreed with the client's author and not built.** A shared envelope lives in the
+  recipient's namespace, so revoking means deleting a row somebody else owns. The only claim the
+  server can check without new state is that the caller's key is the one that AUTHORED the row,
+  which the stored `author_pubkey` already records. Anything richer would put the authority on the
+  delete path — the coupling refused for environment writes, and refused for the same reason.
+
+  **It would stop future reads and nothing else.** The recipient had the plaintext and may have
+  kept it. A verb whose help text reads "they can no longer see it" would be exactly the class of
+  sentence removed from this file all day: prose asserting a property the code does not have. It
+  should say what it removes — their copy — and what it does not.
+
+  **The test that matters is the direction that is not obvious.** Not "the recipient can no longer
+  read", which is the easy half, but that the OWNER's own copy survives and that revoking one
+  recipient leaves every other recipient intact. A delete keyed on the author's key could
+  plausibly take more than it was asked for, and that failure would look exactly like successful
+  revocation.
+
 ### Deployment posture (R28)
 
 - **R28 Forgetting the contract key ran the server open, silently — FIXED** — without
