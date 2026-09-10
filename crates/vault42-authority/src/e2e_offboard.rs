@@ -585,3 +585,111 @@ async fn a_grant_never_authorizes_a_non_member() {
         "a live grant must name nobody once its holder is not a member"
     );
 }
+
+/// The identifier an operator has for a colleague is their ADDRESS, not a UUID they have never
+/// seen. Every removal route took the reference raw, so an address matched no account and the
+/// removal answered for somebody plainly in the organization as though they were absent.
+#[tokio::test]
+async fn a_member_can_be_removed_by_their_address() {
+    let app = fresh_app("offboard-email", None);
+    let (owner, org, _, _) = founder(&app, "obe-own@archicode.codes", "obeco").await;
+    let mail = "obe-bob@archicode.codes";
+    let (_, bob_id) = joined(&app, &owner, &org, (mail, "member")).await;
+    assert!(is_org_member(&app, &owner, &org, &bob_id).await);
+
+    let (status, body) = send(
+        &app,
+        delete_as(&format!("/v1/orgs/{org}/members/{mail}"), &owner),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an address must be accepted: {body}"
+    );
+    assert!(
+        !is_org_member(&app, &owner, &org, &bob_id).await,
+        "the account the address named must be the one removed"
+    );
+}
+
+/// Leaving is always allowed, and it has to stay allowed for the identifier people actually
+/// type. `may_remove` permits self-removal by comparing IDS, so resolution must happen before
+/// that check — resolve afterwards and a plain member typing their own address is refused for
+/// lack of admin, which reads as "you may not leave".
+#[tokio::test]
+async fn a_plain_member_may_leave_using_their_own_address() {
+    let app = fresh_app("offboard-self", None);
+    let (owner, org, _, _) = founder(&app, "osl-own@archicode.codes", "oslco").await;
+    let mail = "osl-bob@archicode.codes";
+    let (bob, bob_id) = joined(&app, &owner, &org, (mail, "member")).await;
+
+    let (status, body) = send(
+        &app,
+        delete_as(&format!("/v1/orgs/{org}/members/{mail}"), &bob),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "leaving must be allowed: {body}");
+    assert!(!is_org_member(&app, &owner, &org, &bob_id).await);
+}
+
+/// A team membership is removable by address too.
+#[tokio::test]
+async fn a_team_member_can_be_removed_by_their_address() {
+    let app = fresh_app("offboard-team-email", None);
+    let (owner, org, _, _) = founder(&app, "ote-own@archicode.codes", "oteco").await;
+    let mail = "ote-bob@archicode.codes";
+    joined(&app, &owner, &org, (mail, "member")).await;
+    let (status, _) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/teams"),
+            &owner,
+            json!({"slug": "core", "name": "Core"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/teams/core/members"),
+            &owner,
+            json!({"user_id": mail, "team_role": "member"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let (status, body) = send(
+        &app,
+        delete_as(&format!("/v1/orgs/{org}/teams/core/members/{mail}"), &owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// An address belonging to nobody in this organization is refused, and refused the same way
+/// whether or not it has an account elsewhere — the removal routes must not become the
+/// membership oracle that scoping resolution to the org exists to avoid.
+#[tokio::test]
+async fn removing_an_address_outside_the_organization_is_refused() {
+    let app = fresh_app("offboard-stranger", None);
+    let (owner, org, _, _) = founder(&app, "ost-own@archicode.codes", "ostco").await;
+    signed_up(&app, "ost-stranger@archicode.codes").await;
+
+    let mut answers = Vec::new();
+    for who in ["ost-stranger@archicode.codes", "ost-nobody@archicode.codes"] {
+        let (status, _) = send(
+            &app,
+            delete_as(&format!("/v1/orgs/{org}/members/{who}"), &owner),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{who} must be refused");
+        answers.push(status);
+    }
+    assert_eq!(
+        answers[0], answers[1],
+        "a registered non-member and a stranger must be indistinguishable"
+    );
+}

@@ -60,6 +60,7 @@ pub async fn org_member(
     Path((org, user)): Path<(String, String)>,
 ) -> Result<Json<RemovedResp>> {
     let (org_id, role) = org_context(&app, org, &caller).await?;
+    let user = resolve_member(&app, &org_id, user).await?;
     let target = app
         .store
         .org_role(org_id.clone(), user.clone())
@@ -77,6 +78,7 @@ pub async fn team_member(
     Path((org, team, user)): Path<(String, String, String)>,
 ) -> Result<Json<RemovedResp>> {
     let (org_id, role) = org_context(&app, org, &caller).await?;
+    let user = resolve_member(&app, &org_id, user).await?;
     require_admin_unless_self(&caller.account_id, role, &user)?;
     let team_id = app
         .store
@@ -101,9 +103,10 @@ pub async fn group_member(
         .ok_or(Error::NotFound)?;
     let role = app
         .store
-        .org_role(org_id, caller.account_id.clone())
+        .org_role(org_id.clone(), caller.account_id.clone())
         .await?
         .ok_or(Error::NotFound)?;
+    let user = resolve_member(&app, &org_id, user).await?;
     require_admin_unless_self(&caller.account_id, role, &user)?;
     app.store.remove_group_member(group, user).await?;
     Ok(removed())
@@ -141,6 +144,24 @@ pub async fn grant(
 pub async fn account(State(app): State<Arc<App>>, caller: Principal) -> Result<Json<RemovedResp>> {
     app.store.erase_account(caller.account_id).await?;
     Ok(removed())
+}
+
+/// Resolve a member reference (account id or email) within the organization.
+///
+/// Resolution happens BEFORE every authorization check on this surface, and the order is the
+/// whole point: `may_remove` and `require_admin_unless_self` both permit removing YOURSELF by
+/// comparing ids, so an address compared against an id never matches and a plain member typing
+/// their own email to leave would be refused for lack of admin. Resolving first makes "leaving
+/// is always allowed" true for the identifier people actually have.
+///
+/// Scoped to this organization's membership, so it answers nothing about addresses outside it.
+async fn resolve_member(app: &App, org_id: &str, reference: String) -> Result<String> {
+    let normalized =
+        crate::validate::normalize_email(&reference).unwrap_or_else(|_| reference.clone());
+    app.store
+        .resolve_org_member(org_id.to_string(), normalized)
+        .await?
+        .ok_or_else(|| Error::BadRequest(format!("no member {reference:?} in this organization")))
 }
 
 /// Whether `caller` may remove `target` from an organization.
