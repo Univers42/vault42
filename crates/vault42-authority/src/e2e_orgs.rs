@@ -1010,3 +1010,56 @@ async fn an_admin_cannot_invite_somebody_above_their_own_standing() {
         "an owner may still name another owner: {body}"
     );
 }
+
+#[tokio::test]
+async fn adding_a_group_member_accepts_an_email_and_records_the_account() {
+    let app = fresh_app("group-member-email", None);
+    let owner = signed_up(&app, "owner16@archicode.codes").await;
+    let member = signed_up(&app, "member16@archicode.codes").await;
+    let org = owned_org(&app, &owner, "grouped").await;
+    joined(
+        &app,
+        (&org, &owner),
+        ("member16@archicode.codes", &member),
+        "member",
+    )
+    .await;
+    let (project, _) = project_with_env(&app, &owner, &org).await;
+    let group = group_in(&app, &owner, &project, "readers").await;
+
+    let (status, body) = send(
+        &app,
+        post_as(
+            &format!("/v1/groups/{group}/members"),
+            &owner,
+            json!({"user_id": "Member16@archicode.codes"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "42ctl documents --user as 'user id or email', as it does for teams: {body}"
+    );
+    let who = account_id(&app, &member).await;
+    assert_eq!(
+        group_member_ids(&app, &group).await,
+        vec![who],
+        "the address must become that ACCOUNT's membership, not a row naming the address"
+    );
+
+    let (status, _) = send(
+        &app,
+        post_as(
+            &format!("/v1/groups/{group}/members"),
+            &owner,
+            json!({"user_id": "stranger16@archicode.codes"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an address outside the organization is refused, like the team route refuses it"
+    );
+}

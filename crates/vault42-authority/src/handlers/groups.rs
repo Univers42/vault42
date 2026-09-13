@@ -12,7 +12,7 @@
 
 //! Project group routes.
 
-use super::{project_admin, INVITE_TTL_SECS};
+use super::{project_admin, resolve_member, INVITE_TTL_SECS};
 use crate::app::App;
 use crate::auth::{session, Principal};
 use crate::error::{Error, Result};
@@ -77,8 +77,9 @@ pub async fn add_member(
     Json(body): Json<AddMemberReq>,
 ) -> Result<StatusCode> {
     let org_id = admin_of_group(&app, &group, &caller).await?;
+    let account_id = resolve_member(&app, &org_id, body.user_id).await?;
     app.store
-        .add_group_member(group, org_id, body.user_id)
+        .add_group_member(group, org_id, account_id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

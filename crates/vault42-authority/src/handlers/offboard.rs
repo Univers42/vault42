@@ -24,7 +24,7 @@
 //! owner and inherit the organization. An organization's last owner cannot be removed at all —
 //! that is enforced in the store, where every path that could do it converges.
 
-use super::{org_context, org_project};
+use super::{org_context, org_project, resolve_member};
 use crate::app::App;
 use crate::auth::Principal;
 use crate::error::{Error, Result};
@@ -144,24 +144,6 @@ pub async fn grant(
 pub async fn account(State(app): State<Arc<App>>, caller: Principal) -> Result<Json<RemovedResp>> {
     app.store.erase_account(caller.account_id).await?;
     Ok(removed())
-}
-
-/// Resolve a member reference (account id or email) within the organization.
-///
-/// Resolution happens BEFORE every authorization check on this surface, and the order is the
-/// whole point: `may_remove` and `require_admin_unless_self` both permit removing YOURSELF by
-/// comparing ids, so an address compared against an id never matches and a plain member typing
-/// their own email to leave would be refused for lack of admin. Resolving first makes "leaving
-/// is always allowed" true for the identifier people actually have.
-///
-/// Scoped to this organization's membership, so it answers nothing about addresses outside it.
-async fn resolve_member(app: &App, org_id: &str, reference: String) -> Result<String> {
-    let normalized =
-        crate::validate::normalize_email(&reference).unwrap_or_else(|_| reference.clone());
-    app.store
-        .resolve_org_member(org_id.to_string(), normalized)
-        .await?
-        .ok_or_else(|| Error::BadRequest(format!("no member {reference:?} in this organization")))
 }
 
 /// Whether `caller` may remove `target` from an organization.
