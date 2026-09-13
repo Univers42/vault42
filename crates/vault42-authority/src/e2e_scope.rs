@@ -643,3 +643,57 @@ async fn a_group_member_must_belong_to_the_organization() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body["error"].as_str().unwrap().contains("organization"));
 }
+
+#[tokio::test]
+async fn the_grant_listing_names_whom_each_grant_is_for() {
+    let app = fresh_app("grant-grantee", None);
+    let (alice, org, _, _) = founder(&app, "gg-owner@archicode.codes", "ggco").await;
+    let proj = project(&app, &alice, &org, "app").await;
+    let grants = format!("/v1/orgs/{org}/projects/{proj}/grants");
+    let member_id = joined_member(&app, &alice, &org, "gg-member@archicode.codes").await;
+    let (status, team) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/teams"),
+            &alice,
+            json!({"slug": "readers", "name": "Readers"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{team}");
+    let team_id = team["id"].as_str().expect("team id").to_string();
+    for grant in [
+        json!({"grantee_kind": "user", "grantee_id": member_id, "project_role": "write"}),
+        json!({"grantee_kind": "team", "grantee_id": "readers", "project_role": "read"}),
+    ] {
+        let (status, body) = send(&app, post_as(&grants, &alice, grant)).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    let (status, body) = send(&app, get_with(&grants, &format!("Bearer {alice}"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows = body.as_array().expect("an array of grants");
+    assert_eq!(
+        rows.len(),
+        2,
+        "positive control: both grants listed: {body}"
+    );
+    let find = |kind: &str| {
+        rows.iter()
+            .find(|g| g["grantee_kind"] == kind)
+            .unwrap_or_else(|| panic!("a {kind} grant must say it is one: {body}"))
+    };
+    let user = find("user");
+    assert_eq!(user["grantee_id"], member_id.as_str(), "{body}");
+    assert_eq!(user["grantee"], member_id.as_str(), "{body}");
+    let team = find("team");
+    assert_eq!(
+        team["grantee_id"],
+        team_id.as_str(),
+        "the stored id, not the slug typed: {body}"
+    );
+    assert_eq!(
+        team["grantee"], "readers",
+        "a team reads by its slug: {body}"
+    );
+}

@@ -40,6 +40,10 @@ pub struct GrantRow {
     pub id: String,
     pub env_id: Option<String>,
     pub project_role: String,
+    pub grantee_kind: String,
+    pub grantee_id: String,
+    /// What a person reads the grantee by: a team's slug, an account's id.
+    pub grantee: String,
 }
 
 impl Store {
@@ -81,8 +85,12 @@ impl Store {
         self.call(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, env_id, project_role FROM grants
-                      WHERE project_id=?1 AND revoked_at IS NULL ORDER BY created_at, id",
+                    "SELECT g.id, g.env_id, g.project_role, g.grantee_kind, g.grantee_id,
+                            COALESCE(t.slug, g.grantee_id)
+                       FROM grants g
+                       LEFT JOIN teams t ON g.grantee_kind = 'team' AND t.id = g.grantee_id
+                      WHERE g.project_id=?1 AND g.revoked_at IS NULL
+                      ORDER BY g.created_at, g.id",
                 )
                 .map_err(|e| Error::Internal(e.into()))?;
             let rows = stmt
@@ -91,6 +99,9 @@ impl Store {
                         id: row.get(0)?,
                         env_id: row.get(1)?,
                         project_role: row.get(2)?,
+                        grantee_kind: row.get(3)?,
+                        grantee_id: row.get(4)?,
+                        grantee: row.get(5)?,
                     })
                 })
                 .map_err(|e| Error::Internal(e.into()))?;
