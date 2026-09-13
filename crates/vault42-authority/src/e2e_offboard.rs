@@ -526,8 +526,8 @@ async fn a_removal_always_says_a_rotation_is_still_required() {
     assert_eq!(body["rotate_required"], true);
     let detail = body["detail"].as_str().expect("detail");
     assert!(
-        detail.contains("rotate-scope"),
-        "the response must name the follow-up an operator has to run: {detail}"
+        detail.contains("42ctl env keys rotate"),
+        "the response must name the follow-up an operator has to run, as the CLI spells it: {detail}"
     );
 }
 

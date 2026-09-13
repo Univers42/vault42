@@ -69,6 +69,29 @@ async fn admin_context(
     Ok((org_id, role))
 }
 
+/// Resolve a member reference — an account id or an email address — within the organization.
+///
+/// 42ctl documents every `--user` flag as "user id or email" and sends whichever the operator
+/// typed. Stored verbatim, an address became a membership row matching no account: a team that
+/// silently authorized nobody, a group that refused an actual member as "not a member of the
+/// organization". One resolver for the team, group and removal routes, so a fourth route cannot
+/// be written without it. Resolving within the organization keeps an address from being a lookup
+/// oracle for accounts outside it.
+///
+/// On the removal routes it must run BEFORE any authorization check. `may_remove` and
+/// `require_admin_unless_self` permit removing YOURSELF by comparing ids, so an address compared
+/// against an id never matches, and a plain member typing their own email to leave would be
+/// refused for lack of admin. Resolving first makes "leaving is always allowed" true for the
+/// identifier people actually have.
+async fn resolve_member(app: &App, org_id: &str, reference: String) -> Result<String> {
+    let normalized =
+        crate::validate::normalize_email(&reference).unwrap_or_else(|_| reference.clone());
+    app.store
+        .resolve_org_member(org_id.to_string(), normalized)
+        .await?
+        .ok_or_else(|| Error::BadRequest(format!("no member {reference:?} in this organization")))
+}
+
 /// Resolve a project reference and the caller's role in its organization.
 ///
 /// Most project routes do not carry the organization in their path, so the project is what

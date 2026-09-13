@@ -16,7 +16,7 @@
 //! the rule the schema enforces with a composite foreign key; these handlers surface it as
 //! a message rather than a bare constraint failure.
 
-use super::{admin_context, check_slug, org_context, INVITE_TTL_SECS};
+use super::{admin_context, check_slug, org_context, resolve_member, INVITE_TTL_SECS};
 use crate::app::App;
 use crate::auth::{session, Principal};
 use crate::error::{Error, Result};
@@ -163,19 +163,4 @@ async fn resolve(app: &App, org_id: &str, reference: String) -> Result<String> {
         .resolve_team(org_id.to_string(), reference)
         .await?
         .ok_or(Error::NotFound)
-}
-
-/// Resolve a member reference (account id or email) within the organization.
-///
-/// The client documents this field as "user id or email" and sent whichever the operator
-/// typed; it was stored verbatim, so an address became a team member row matching no account
-/// and the team silently authorized nobody. Resolving within the organization keeps the
-/// address from being a lookup oracle for non-members.
-async fn resolve_member(app: &App, org_id: &str, reference: String) -> Result<String> {
-    let normalized =
-        crate::validate::normalize_email(&reference).unwrap_or_else(|_| reference.clone());
-    app.store
-        .resolve_org_member(org_id.to_string(), normalized)
-        .await?
-        .ok_or_else(|| Error::BadRequest(format!("no member {reference:?} in this organization")))
 }
