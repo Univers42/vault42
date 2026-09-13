@@ -48,7 +48,7 @@ fn removed() -> Json<RemovedResp> {
         removed: true,
         rotate_required: true,
         detail: "authorization removed; scope keys already held remain readable until the \
-                 environment is rotated — run `vault rotate-scope` for each environment",
+                 environment is rotated — run `42ctl env keys rotate` for each environment",
     })
 }
 
