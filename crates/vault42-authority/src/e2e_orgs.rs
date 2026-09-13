@@ -950,3 +950,63 @@ async fn a_group_invite_that_cannot_be_honoured_stays_redeemable() {
         "the second accept must enrol him"
     );
 }
+
+#[tokio::test]
+async fn an_admin_cannot_invite_somebody_above_their_own_standing() {
+    let app = fresh_app("invite-escalation", None);
+    let owner = signed_up(&app, "owner15@archicode.codes").await;
+    let admin = signed_up(&app, "admin15@archicode.codes").await;
+    let org = owned_org(&app, &owner, "laddered").await;
+    joined(
+        &app,
+        (&org, &owner),
+        ("admin15@archicode.codes", &admin),
+        "admin",
+    )
+    .await;
+
+    let (status, body) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/invites"),
+            &admin,
+            json!({"email": "puppet15@archicode.codes", "role": "owner"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an admin must not be able to mint an owner: {body}"
+    );
+
+    let (status, body) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/invites"),
+            &admin,
+            json!({"email": "peer15@archicode.codes", "role": "admin"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an admin may still invite a peer: {body}"
+    );
+
+    let (status, body) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/invites"),
+            &owner,
+            json!({"email": "heir15@archicode.codes", "role": "owner"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an owner may still name another owner: {body}"
+    );
+}

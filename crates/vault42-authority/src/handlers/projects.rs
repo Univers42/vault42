@@ -57,7 +57,7 @@ pub async fn create(
     Path(org): Path<String>,
     Json(body): Json<CreateProjectReq>,
 ) -> Result<(StatusCode, Json<ProjectResp>)> {
-    let org_id = admin_context(&app, org, &caller).await?;
+    let (org_id, _) = admin_context(&app, org, &caller).await?;
     check_slug(&body.slug, "slug")?;
     if body.name.trim().is_empty() || body.name.len() > 200 {
         return Err(Error::BadRequest("name must be 1..=200 characters".into()));

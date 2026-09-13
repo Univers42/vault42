@@ -79,6 +79,27 @@ impl OrgRole {
         }
         Err(Error::Forbidden)
     }
+
+    /// Where this role sits in the ladder, larger being more privileged.
+    fn rank(self) -> u8 {
+        match self {
+            Self::Owner => 2,
+            Self::Admin => 1,
+            Self::Member => 0,
+        }
+    }
+
+    /// Refuse unless this role may hand out `target`.
+    ///
+    /// Nobody hands out a standing above their own. Without this an administrator could
+    /// invite an address they control at `owner`, accept it, and come back as an owner: the
+    /// administrator check alone says who may invite, never at what rank.
+    pub fn require_can_grant(self, target: Self) -> Result<Self> {
+        if self.rank() >= target.rank() {
+            return Ok(self);
+        }
+        Err(Error::Forbidden)
+    }
 }
 
 impl TeamRole {
@@ -149,6 +170,15 @@ mod tests {
         assert!(!OrgRole::Member.can_administer());
         assert!(OrgRole::Member.require_admin().is_err());
         assert!(OrgRole::Admin.require_admin().is_ok());
+    }
+
+    #[test]
+    fn nobody_hands_out_a_standing_above_their_own() {
+        assert!(OrgRole::Admin.require_can_grant(OrgRole::Owner).is_err());
+        assert!(OrgRole::Member.require_can_grant(OrgRole::Admin).is_err());
+        assert!(OrgRole::Owner.require_can_grant(OrgRole::Owner).is_ok());
+        assert!(OrgRole::Admin.require_can_grant(OrgRole::Admin).is_ok());
+        assert!(OrgRole::Admin.require_can_grant(OrgRole::Member).is_ok());
     }
 
     #[test]
