@@ -244,6 +244,12 @@ fn enrol_in_team(
 }
 
 /// Add the caller to the invited group, which requires organization membership.
+///
+/// The conflict clause names the primary key on purpose. A bare `OR IGNORE` would also
+/// swallow a NOT NULL or foreign-key violation, which is how this enrolment used to report
+/// success while recording nothing and burning the invite; naming the key means only an
+/// already-present membership is tolerated and every other violation still fails the
+/// transaction, leaving the invite redeemable.
 fn enrol_in_group(
     tx: &rusqlite::Transaction<'_>,
     invite: &InviteRow,
@@ -270,10 +276,26 @@ fn enrol_in_group(
         ));
     }
     tx.execute(
-        "INSERT OR IGNORE INTO group_members(group_id, account_id, created_at) VALUES(?1,?2,?3)",
-        params![invite.scope_id, acceptance.account_id, acceptance.now],
+        "INSERT INTO group_members(group_id, org_id, account_id, created_at)
+         VALUES(?1,?2,?3,?4)
+         ON CONFLICT(group_id, account_id) DO NOTHING",
+        params![
+            invite.scope_id,
+            org_id,
+            acceptance.account_id,
+            acceptance.now
+        ],
     )
-    .map_err(|e| Error::Internal(e.into()))?;
+    .map_err(|error| {
+        if is_constraint_violation(&error) {
+            Error::BadRequest(
+                "accept the organization invite first; a group member must belong to the organization"
+                    .into(),
+            )
+        } else {
+            Error::Internal(error.into())
+        }
+    })?;
     Ok(())
 }
 

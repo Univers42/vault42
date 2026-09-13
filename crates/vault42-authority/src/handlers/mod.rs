@@ -56,10 +56,17 @@ async fn org_context(
 }
 
 /// Resolve an organization and refuse unless the caller may administer it.
-async fn admin_context(app: &App, reference: String, caller: &Principal) -> Result<String> {
+///
+/// The role travels back with the id because administering is not one privilege: a route
+/// that hands out a standing still has to compare it to the caller's own.
+async fn admin_context(
+    app: &App,
+    reference: String,
+    caller: &Principal,
+) -> Result<(String, OrgRole)> {
     let (org_id, role) = org_context(app, reference, caller).await?;
     role.require_admin()?;
-    Ok(org_id)
+    Ok((org_id, role))
 }
 
 /// Resolve a project reference and the caller's role in its organization.

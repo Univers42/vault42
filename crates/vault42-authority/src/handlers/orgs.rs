@@ -133,16 +133,17 @@ pub async fn members(
     ))
 }
 
-/// Invite someone to an organization. Administrators only.
+/// Invite someone to an organization. Administrators only, and never above their own rank.
 pub async fn invite(
     State(app): State<Arc<App>>,
     caller: Principal,
     Path(org): Path<String>,
     Json(body): Json<InviteReq>,
 ) -> Result<(StatusCode, Json<IssuedInviteResp>)> {
-    let org_id = admin_context(&app, org, &caller).await?;
+    let (org_id, caller_role) = admin_context(&app, org, &caller).await?;
     let email = validate::normalize_email(&body.email).map_err(Error::BadRequest)?;
     let role = OrgRole::parse(body.role.as_deref().unwrap_or("member"))?;
+    caller_role.require_can_grant(role)?;
     let issued = session::mint(now_unix(), INVITE_TTL_SECS);
     let id = uuid::Uuid::new_v4().to_string();
     app.store

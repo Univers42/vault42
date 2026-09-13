@@ -811,3 +811,202 @@ async fn adding_a_team_member_accepts_an_email() {
         "the CLI documents this field as 'user id or email': {body}"
     );
 }
+
+/// The accounts the database records as members of `group`.
+///
+/// No route reads `group_members` yet, so the membership an accepted invite is supposed to
+/// create is only observable in the table itself. Asserting on it is the only way to catch
+/// an enrolment that silently records nothing.
+async fn group_member_ids(app: &std::sync::Arc<crate::app::App>, group: &str) -> Vec<String> {
+    let group = group.to_string();
+    app.store
+        .call(move |conn| {
+            let mut query = conn
+                .prepare("SELECT account_id FROM group_members WHERE group_id=?1")
+                .map_err(|e| crate::error::Error::Internal(e.into()))?;
+            let rows = query
+                .query_map(rusqlite::params![group], |row| row.get::<_, String>(0))
+                .map_err(|e| crate::error::Error::Internal(e.into()))?;
+            rows.collect::<rusqlite::Result<Vec<String>>>()
+                .map_err(|e| crate::error::Error::Internal(e.into()))
+        })
+        .await
+        .expect("read group members")
+}
+
+/// Create a group in `project` and return its id.
+async fn group_in(
+    app: &std::sync::Arc<crate::app::App>,
+    token: &str,
+    project: &str,
+    name: &str,
+) -> String {
+    let (status, body) = send(
+        app,
+        post_as(
+            &format!("/v1/projects/{project}/groups"),
+            token,
+            json!({ "name": name }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "group create: {body}");
+    body["id"].as_str().expect("group id").to_string()
+}
+
+/// Invite `email` to `group` and return the token.
+async fn group_invite(
+    app: &std::sync::Arc<crate::app::App>,
+    token: &str,
+    group: &str,
+    email: &str,
+) -> String {
+    let (status, body) = send(
+        app,
+        post_as(
+            &format!("/v1/groups/{group}/invites"),
+            token,
+            json!({ "email": email, "role": "member" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "group invite: {body}");
+    body["token"].as_str().expect("invite token").to_string()
+}
+
+#[tokio::test]
+async fn accepting_a_group_invite_records_the_membership() {
+    let app = fresh_app("group-invite-accept", None);
+    let owner = signed_up(&app, "owner13@archicode.codes").await;
+    let hire = signed_up(&app, "hire13@archicode.codes").await;
+    let org = owned_org(&app, &owner, "groupco").await;
+    joined(
+        &app,
+        (&org, &owner),
+        ("hire13@archicode.codes", &hire),
+        "member",
+    )
+    .await;
+    let (project, _) = project_with_env(&app, &owner, &org).await;
+    let group = group_in(&app, &owner, &project, "readers").await;
+    let token = group_invite(&app, &owner, &group, "hire13@archicode.codes").await;
+
+    let (status, body) = send(
+        &app,
+        post_as("/v1/invites/accept", &hire, json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "group invite should accept: {body}");
+    assert_eq!(body["scope_kind"], "group", "{body}");
+
+    let who = account_id(&app, &hire).await;
+    assert!(
+        group_member_ids(&app, &group).await.contains(&who),
+        "an accepted group invite must leave a membership behind, not report success and record nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_group_invite_that_cannot_be_honoured_stays_redeemable() {
+    let app = fresh_app("group-invite-order", None);
+    let owner = signed_up(&app, "owner14@archicode.codes").await;
+    let outsider = signed_up(&app, "outsider14@archicode.codes").await;
+    let org = owned_org(&app, &owner, "orderly").await;
+    let (project, _) = project_with_env(&app, &owner, &org).await;
+    let group = group_in(&app, &owner, &project, "readers").await;
+    let token = group_invite(&app, &owner, &group, "outsider14@archicode.codes").await;
+
+    let (status, body) = send(
+        &app,
+        post_as("/v1/invites/accept", &outsider, json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a group invite cannot bypass org membership: {body}"
+    );
+
+    joined(
+        &app,
+        (&org, &owner),
+        ("outsider14@archicode.codes", &outsider),
+        "member",
+    )
+    .await;
+    let (status, body) = send(
+        &app,
+        post_as("/v1/invites/accept", &outsider, json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the refused accept must not have burned the invite: {body}"
+    );
+    let who = account_id(&app, &outsider).await;
+    assert!(
+        group_member_ids(&app, &group).await.contains(&who),
+        "the second accept must enrol him"
+    );
+}
+
+#[tokio::test]
+async fn an_admin_cannot_invite_somebody_above_their_own_standing() {
+    let app = fresh_app("invite-escalation", None);
+    let owner = signed_up(&app, "owner15@archicode.codes").await;
+    let admin = signed_up(&app, "admin15@archicode.codes").await;
+    let org = owned_org(&app, &owner, "laddered").await;
+    joined(
+        &app,
+        (&org, &owner),
+        ("admin15@archicode.codes", &admin),
+        "admin",
+    )
+    .await;
+
+    let (status, body) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/invites"),
+            &admin,
+            json!({"email": "puppet15@archicode.codes", "role": "owner"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an admin must not be able to mint an owner: {body}"
+    );
+
+    let (status, body) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/invites"),
+            &admin,
+            json!({"email": "peer15@archicode.codes", "role": "admin"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an admin may still invite a peer: {body}"
+    );
+
+    let (status, body) = send(
+        &app,
+        post_as(
+            &format!("/v1/orgs/{org}/invites"),
+            &owner,
+            json!({"email": "heir15@archicode.codes", "role": "owner"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an owner may still name another owner: {body}"
+    );
+}

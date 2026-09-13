@@ -22,10 +22,10 @@
 //! new scope key exists only in the rotating client's memory, so a rotation that omits the
 //! caller leaves nobody able to open the secrets it just re-sealed.
 
-use crate::ops_write::map_store;
 use crate::principal::Principal;
 use crate::svc::VaultSvc;
 use tonic::Status;
+use vault42_core::ScopeRole;
 use vault42_proto::vault::v1::{RotateScopeRequest, RotateScopeResponse, WrapScopeKeyRequest};
 
 impl VaultSvc {
@@ -61,11 +61,18 @@ impl VaultSvc {
 }
 
 impl VaultSvc {
-    /// Refuse a rotation of a scope the caller does not already hold.
+    /// Refuse a rotation by anyone who does not hold this scope AS A WRITER.
     ///
     /// Rotation is the second door onto the same store: it calls `store_one_rewrap` directly,
-    /// once per member, so the membership rule enforced on the single-deposit path has to be
-    /// enforced here too or an attacker simply sends a one-member rotation instead.
+    /// once per member, so the rule enforced on the single-deposit path has to be enforced here
+    /// too or an attacker simply sends a one-member rotation instead.
+    ///
+    /// Writer rather than membership, for the reason `require_may_grant` spells out. A Reader
+    /// holds a wrap, therefore holds the scope secret, therefore can generate a fresh keyset and
+    /// mint validly-signed rewraps for every member at a new epoch — handing themselves Writer
+    /// in the process. Membership alone satisfies every other rule on this path, so a
+    /// membership-only check here made the deposit path's Writer rule a lock on one of two
+    /// doors. `a_reader_cannot_rewrite_every_wrap_through_the_rotation_door` measured it.
     ///
     /// There is no bootstrap exception here, deliberately. `env-init` creates a scope; rotation
     /// re-keys one that exists. A rotation of a scope nobody holds is not a legitimate first
@@ -79,17 +86,15 @@ impl VaultSvc {
         caller: &Principal,
         scope_id: &str,
     ) -> Result<(), Status> {
-        let standing = self
-            .store
-            .scope_standing(scope_id, &caller.id)
-            .await
-            .map_err(map_store)?;
-        if standing.subject_is_member {
-            return Ok(());
+        match self.current_role(caller, scope_id).await? {
+            Some(ScopeRole::Writer) => Ok(()),
+            Some(ScopeRole::Reader) => Err(Status::permission_denied(
+                "a read-only member of this scope may not rotate it",
+            )),
+            None => Err(Status::permission_denied(
+                "only a member of this scope may rotate it",
+            )),
         }
-        Err(Status::permission_denied(
-            "only a member of this scope may rotate it",
-        ))
     }
 }
 
@@ -250,6 +255,26 @@ mod tests {
         scope: [u8; 16],
         epoch: u32,
     ) -> WrapScopeKeyRequest {
+        wrap_req_as(
+            member,
+            member_pub,
+            granter,
+            scope_secret,
+            (scope, epoch),
+            ScopeRole::Writer,
+        )
+    }
+
+    /// The same request at a named role, for the tests that turn on which role is carried.
+    fn wrap_req_as(
+        member: &Principal,
+        member_pub: &RecipientPublicKey,
+        granter: &Identity,
+        scope_secret: &Zeroizing<[u8; 32]>,
+        at: ([u8; 16], u32),
+        role: ScopeRole,
+    ) -> WrapScopeKeyRequest {
+        let (scope, epoch) = at;
         let blob = grant_scope_key(
             scope_secret,
             member_pub,
@@ -257,7 +282,7 @@ mod tests {
             GrantTerms {
                 scope_id: scope,
                 epoch,
-                role: ScopeRole::Writer,
+                role,
             },
         )
         .expect("grant")
@@ -400,6 +425,109 @@ mod tests {
         )
         .await
         .expect("positive control: the scope's own member may still rotate it");
+    }
+
+    /// R22h — the rotation door has to enforce the SAME Writer rule the deposit door does.
+    ///
+    /// A Reader holds a wrap, so they hold the scope secret, so they can generate a fresh
+    /// keyset and mint validly-signed rewraps for every member at a new epoch — carrying
+    /// Writer for themselves. Membership alone satisfies caller-is-a-member and
+    /// caller-signed-every-rewrap, and the upsert then replaces the whole scope's wraps with
+    /// the attacker's. `a_reader_cannot_promote_their_own_wrap_to_writer` closed that on the
+    /// single-deposit path; this is the same promotion through the other door.
+    #[tokio::test]
+    async fn a_reader_cannot_rewrite_every_wrap_through_the_rotation_door() {
+        let svc = fresh_svc("rotate-reader");
+        let (admin, reader, victim) = (
+            Identity::generate(),
+            Identity::generate(),
+            Identity::generate(),
+        );
+        let admin_p = Principal::from_pubkey(admin.author_public().to_bytes());
+        let reader_p = Principal::from_pubkey(reader.author_public().to_bytes());
+        let victim_p = Principal::from_pubkey(victim.author_public().to_bytes());
+        let scope = [7u8; 16];
+        let (_k1, s1) = generate_keyset(scope, 1);
+        bootstrap_scope(&svc, &admin, &s1, scope, 1).await;
+        svc.op_wrap_scope_key(
+            &admin_p,
+            wrap_req_as(
+                &reader_p,
+                &reader.encryption_public(),
+                &admin,
+                &s1,
+                (scope, 1),
+                ScopeRole::Reader,
+            ),
+        )
+        .await
+        .expect("the admin enrols a read-only member");
+        svc.op_wrap_scope_key(
+            &admin_p,
+            wrap_req(
+                &victim_p,
+                &victim.encryption_public(),
+                &admin,
+                &s1,
+                scope,
+                1,
+            ),
+        )
+        .await
+        .expect("the admin enrols a writer");
+
+        let (_k2, s2) = generate_keyset(scope, 2);
+        let hostile = RotateScopeRequest {
+            scope_id: hex::encode(scope),
+            new_epoch: 2,
+            rewraps: vec![
+                wrap_req(
+                    &reader_p,
+                    &reader.encryption_public(),
+                    &reader,
+                    &s2,
+                    scope,
+                    2,
+                ),
+                wrap_req_as(
+                    &victim_p,
+                    &victim.encryption_public(),
+                    &reader,
+                    &s2,
+                    (scope, 2),
+                    ScopeRole::Reader,
+                ),
+            ],
+        };
+        let refusal = svc
+            .op_rotate_scope(&reader_p, hostile)
+            .await
+            .expect_err("a Reader must not rotate the scope");
+        assert_eq!(refusal.code(), tonic::Code::PermissionDenied);
+
+        let err = svc
+            .op_get_scope_key(&victim_p, &hex::encode(scope), 2)
+            .await
+            .expect_err("the refused rotation must have stored nothing");
+        assert_eq!(err.code(), tonic::Code::NotFound);
+
+        svc.op_rotate_scope(
+            &admin_p,
+            RotateScopeRequest {
+                scope_id: hex::encode(scope),
+                new_epoch: 2,
+                rewraps: vec![wrap_req(
+                    &admin_p,
+                    &admin.encryption_public(),
+                    &admin,
+                    &s2,
+                    scope,
+                    2,
+                )],
+            },
+        )
+        .await
+        .expect("positive control: a Writer in the scope may still rotate it");
     }
 
     #[tokio::test]

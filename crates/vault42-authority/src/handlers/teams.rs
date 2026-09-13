@@ -61,7 +61,7 @@ pub async fn create(
     Path(org): Path<String>,
     Json(body): Json<CreateTeamReq>,
 ) -> Result<(StatusCode, Json<TeamResp>)> {
-    let org_id = admin_context(&app, org, &caller).await?;
+    let (org_id, _) = admin_context(&app, org, &caller).await?;
     check_slug(&body.slug, "slug")?;
     let id = uuid::Uuid::new_v4().to_string();
     app.store
@@ -108,7 +108,7 @@ pub async fn add_member(
     Path((org, team)): Path<(String, String)>,
     Json(body): Json<AddMemberReq>,
 ) -> Result<StatusCode> {
-    let org_id = admin_context(&app, org, &caller).await?;
+    let (org_id, _) = admin_context(&app, org, &caller).await?;
     let team_id = resolve(&app, &org_id, team).await?;
     let role = TeamRole::parse(body.team_role.as_deref().unwrap_or("member"))?;
     let account_id = resolve_member(&app, &org_id, body.user_id).await?;
@@ -130,7 +130,7 @@ pub async fn invite(
     Path((org, team)): Path<(String, String)>,
     Json(body): Json<InviteReq>,
 ) -> Result<(StatusCode, Json<IssuedInviteResp>)> {
-    let org_id = admin_context(&app, org, &caller).await?;
+    let (org_id, _) = admin_context(&app, org, &caller).await?;
     let team_id = resolve(&app, &org_id, team).await?;
     let email = validate::normalize_email(&body.email).map_err(Error::BadRequest)?;
     let role = TeamRole::parse(body.role.as_deref().unwrap_or("member"))?;
