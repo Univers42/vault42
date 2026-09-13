@@ -336,6 +336,22 @@ on the new-epoch revision is covered there and not by a vault42 gate.
   restricted to granting to yourself (R21c). A grant whose blob will not parse yields no role and
   is refused; "I cannot read your wrap" must never render as permitted.
 
+- **R22h Rotating requires `Writer` too, because rotation is the other door — FIXED** — R22e closed
+  self-promotion on the single-deposit path while `op_rotate_scope` still authorized on membership
+  alone, so the same four steps worked through the rotation RPC and reached further. A `Reader`
+  holds a wrap, therefore holds the scope secret, therefore can generate a FRESH keyset, mint
+  validly-signed rewraps for every member at a new epoch, and hand themselves `Writer` in the batch.
+  Every other rule on that path was satisfied: they signed each rewrap, they included one for
+  themselves, and they were a member. A membership-only check there made R22e a lock on one of two
+  doors — and worse than the deposit path, since one rotation replaces EVERY member's wrap rather
+  than one.
+
+  `a_reader_cannot_rewrite_every_wrap_through_the_rotation_door` measured it before the fix: the
+  hostile rotation returned `rewrapped: 2`. `require_rotator_holds_the_scope` now reads the same
+  newest-wrap role `require_may_grant` does and admits only `Writer`. There is still no bootstrap
+  exception on this path, deliberately: `env-init` creates a scope, rotation re-keys one that
+  exists, so a rotation of a scope nobody holds is a claim on somebody else's scope id.
+
 - **R22f The pre-role grant path is deleted** — a grant without the `v42g2` prefix used to read as
   `Writer` so pre-role grants kept working while the client learned to mint roles. That branch is
   gone in the same commit that started requiring `Writer`, because it was the one path a pre-role
