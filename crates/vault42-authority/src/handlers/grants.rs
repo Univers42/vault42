@@ -81,6 +81,15 @@ pub struct ProjectGrantResp {
     /// write therefore received Reader wraps and could not write. Nothing reported an error — the
     /// grant said write, the wrap said read, and only the wrap is enforced.
     project_role: String,
+    /// Whom the grant is for: `user` or `team`, the stored id, and what a person reads it by —
+    /// the team's slug, or the account's id (the roster names members by id too, so no address
+    /// is disclosed that the organization's member listing does not already show).
+    ///
+    /// Without these an administrator could see that a write grant existed and not whose it was,
+    /// so revoking one person's access meant guessing among ids.
+    grantee_kind: String,
+    grantee_id: String,
+    grantee: String,
 }
 
 /// Everyone the grant authorizes (`members`), and which of them still need a scope-key wrap
@@ -183,6 +192,9 @@ pub async fn list(
                 id: row.id,
                 env_id: row.env_id,
                 project_role: row.project_role,
+                grantee_kind: row.grantee_kind,
+                grantee_id: row.grantee_id,
+                grantee: row.grantee,
             })
             .collect(),
     ))
