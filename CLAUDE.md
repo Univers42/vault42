@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 vault42 is a self-hosted **zero-knowledge** secrets vault, all Rust. All plaintext crypto happens
 client-side; the server stores an opaque `Envelope` blob it cannot decrypt. Read `.claude/AGENTS.md`
-(binding repo rules) and `DECISIONS.md` (D0–D12, the architecture record) before non-trivial work.
+(binding repo rules) and `DECISIONS.md` (D0–D13, the architecture record) before non-trivial work.
 
 **Precedence in this repo** overrides the global default: `security ≈ correctness > performance >
 minimalism > readability > style` (D0). Record every trade-off in `DECISIONS.md`.
@@ -227,7 +227,7 @@ the target must be re-verified at that moment rather than from an earlier scan.
 
 ## Doc map
 
-`USERDOC.md` full user guide and the CLI reference · `DECISIONS.md` D0–D12 architecture record ·
+`USERDOC.md` full user guide and the CLI reference · `DECISIONS.md` D0–D13 architecture record ·
 `THREAT-MODEL.md` adversaries and residual risks R1–R18 · `RUNBOOK.md` deploy, rotation, and what is
 shipped versus merely designed · `HUMAN-ATOMS.md` remaining human/account actions. `RUNBOOK.md` is
 the intended authority on which flag-gated features are live, but it was the source of three false
