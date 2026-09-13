@@ -42,7 +42,7 @@ pub struct GrantRow {
     pub project_role: String,
     pub grantee_kind: String,
     pub grantee_id: String,
-    /// What a person reads the grantee by: a team's slug, an account's id.
+    /// What a person reads the grantee by: a team's slug, a group's name, an account's id.
     pub grantee: String,
 }
 
@@ -86,9 +86,10 @@ impl Store {
             let mut stmt = conn
                 .prepare(
                     "SELECT g.id, g.env_id, g.project_role, g.grantee_kind, g.grantee_id,
-                            COALESCE(t.slug, g.grantee_id)
+                            COALESCE(t.slug, gr.name, g.grantee_id)
                        FROM grants g
                        LEFT JOIN teams t ON g.grantee_kind = 'team' AND t.id = g.grantee_id
+                       LEFT JOIN groups gr ON g.grantee_kind = 'group' AND gr.id = g.grantee_id
                       WHERE g.project_id=?1 AND g.revoked_at IS NULL
                       ORDER BY g.created_at, g.id",
                 )
@@ -129,7 +130,12 @@ impl Store {
     }
 }
 
-/// Refuse a grantee that does not belong to the project's organization.
+/// Refuse a grantee that does not belong to the project's organization — or, for a group, to
+/// the project itself.
+///
+/// Checked here as well as when the handler resolves the reference, because this is the last
+/// statement before the row exists, and a kind this does not recognize is refused rather than
+/// read as a team.
 fn check_grantee(conn: &rusqlite::Connection, new: &NewGrant) -> Result<()> {
     let org_id: String = conn
         .query_row(
@@ -138,13 +144,23 @@ fn check_grantee(conn: &rusqlite::Connection, new: &NewGrant) -> Result<()> {
             |row| row.get(0),
         )
         .map_err(|_| Error::NotFound)?;
-    let sql = if new.grantee_kind == "user" {
-        "SELECT COUNT(*) FROM org_members WHERE org_id=?1 AND account_id=?2"
-    } else {
-        "SELECT COUNT(*) FROM teams WHERE org_id=?1 AND id=?2"
+    let (sql, scope) = match new.grantee_kind.as_str() {
+        "user" => (
+            "SELECT COUNT(*) FROM org_members WHERE org_id=?1 AND account_id=?2",
+            &org_id,
+        ),
+        "team" => (
+            "SELECT COUNT(*) FROM teams WHERE org_id=?1 AND id=?2",
+            &org_id,
+        ),
+        "group" => (
+            "SELECT COUNT(*) FROM groups WHERE project_id=?1 AND id=?2",
+            &new.project_id,
+        ),
+        other => return Err(Error::BadRequest(format!("unknown grantee kind {other:?}"))),
     };
     let count: i64 = conn
-        .query_row(sql, params![org_id, new.grantee_id], |row| row.get(0))
+        .query_row(sql, params![scope, new.grantee_id], |row| row.get(0))
         .map_err(|e| Error::Internal(e.into()))?;
     if count == 0 {
         return Err(Error::BadRequest(format!(

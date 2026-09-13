@@ -196,3 +196,35 @@ better version of it, because now they can also see and revoke who came through.
 Falsified before being trusted, per `.claude/rules/verify-gates.md`: removing
 `release_tenants` turns `deleting_an_account_releases_its_tenant_names` red (409 vs 200), and
 disabling the quota check turns `an_account_may_not_hoard_tenant_names` red (200 vs 403).
+
+## D14 — A project group can be granted a role
+
+Groups could be created, joined, invited to and left, and authorized nothing. The `grants`
+table's CHECK admitted `user` and `team` only, so the natural thing an administrator does — put
+somebody in the group that deploys and grant that group write — gave them nothing, silently.
+42ctl's `group` verbs all worked, which made it worse: every step reported success.
+
+**Decided.** `grantee_kind` admits `group`. A group grant is resolved within its PROJECT, not
+its organization: a group belongs to one project, and granting it on another would reach people
+nobody chose for that project. Authorization (`store/authz.rs`), the wrap bookkeeping's
+`authorized_members` (`store/wraps.rs`) and the grant listing all read the group's CURRENT
+membership. Group membership already carries a composite foreign key onto organization
+membership that cascades (M6), so leaving the organization ends a group grant exactly as it ends
+a team grant, with no removal path to forget. `authorized_members` now refuses an unknown kind
+instead of reading anything that is not a user as a team — a group grant under the old code would
+have authorized nobody, and a future kind would have done the same without a word.
+
+**The migration is the dangerous part, and it is why the runner changed.** SQLite cannot alter a
+CHECK, so M9 rebuilds `grants`. But `grants` is a parent — `grant_wraps` references it
+`ON DELETE CASCADE` — and a DROP with foreign keys enforced performs an implicit DELETE first. The
+rebuild done the way M6 rebuilt `group_members` would have deleted every wrap record in the
+database, and rotation would then have re-wrapped nobody. Migrations now carry
+`rebuilds_a_parent`; such a step runs with foreign keys off for its duration only (the pragma is a
+no-op inside a transaction, so it is switched around it), must leave `pragma_foreign_key_check`
+empty or is rolled back, and switches keys back on whether it succeeded or not.
+
+Falsified before being trusted: applying M9 through the ordinary path turns
+`widening_grants_to_groups_keeps_every_wrap_and_every_reference` red with the wrap record gone
+(0 vs 1); a step that orphans a reference is rolled back by
+`a_rebuild_that_would_dangle_a_reference_is_rolled_back`; and five of the six `e2e_groups` tests
+fail against the code before this change.

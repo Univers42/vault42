@@ -31,6 +31,8 @@ mod e2e;
 #[cfg(test)]
 mod e2e_github;
 #[cfg(test)]
+mod e2e_groups;
+#[cfg(test)]
 mod e2e_offboard;
 #[cfg(test)]
 mod e2e_orgs;
