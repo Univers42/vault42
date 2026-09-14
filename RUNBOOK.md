@@ -56,10 +56,22 @@ $FLY secrets set VAULT42_CONTRACT_PUBKEY="$KEY" --stage -a vault42 && $FLY deplo
 
 ## Deploy (fly.io)
 
-Deploys are automated. A push to `develop` runs `vault42-ci`; when that goes green the
-`deploy` workflow builds both images, releases them, smoke-tests the result, and stops the
-machines again. Nothing below needs running by hand in the normal case — it is here for the
-first deploy on a new account and for the day the automation is what's broken.
+Deploys are automated, and every deploy is a release. A push to `develop` runs `vault42-ci`;
+when that goes green, `auto-release` turns the commit into the next version — a `release: vX.Y.Z`
+commit bumping `Cargo.toml` and `Cargo.lock`, the tag `vX.Y.Z`, a GitHub Release, and `main`
+fast-forwarded to it. The tag starts `deploy`, which re-checks that CI passed on that commit, builds
+both images labelled `vX.Y.Z`, releases them, smoke-tests the result — including that the
+authority's `/version` answers with that version and commit — and stops the machines again; and
+`docker`, which publishes `docker.io/dlesieur/vault42:vX.Y.Z`. Nothing below needs running by hand
+in the normal case — it is here for the first deploy on a new account and for the day the
+automation is what's broken.
+
+- **What is in production:** `curl https://vault42-authority.fly.dev/version`, or the image label in
+  `fly status` / `42ctl cloud status`.
+- **A minor or major release:** `sh scripts/ops/release-version.sh set 0.3.0` in a pull request.
+  The first green CI after it releases `v0.3.0` instead of the next patch.
+- **Auto-release needs the `GH_PAT` repository secret.** A tag pushed with the job's own token
+  starts no workflow, so without it versions would be cut that never deploy; the job fails instead.
 
 flyctl is not installed on the host, so it runs from its own image. The token is read from
 `../.env` and never printed:

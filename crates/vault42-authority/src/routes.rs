@@ -34,6 +34,7 @@ use std::sync::Arc;
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/version", get(version))
         .route("/v1/contract-key", get(contract::contract_key))
         .route("/v1/register", post(contract::register))
         .merge(auth_routes())
@@ -174,4 +175,16 @@ fn invite_routes() -> Router<Arc<App>> {
 /// Liveness probe for the fly health check.
 async fn healthz() -> &'static str {
     "ok"
+}
+
+/// The release this authority was built as, and the commit when the build was told it.
+///
+/// Public, like `/healthz`: it is what lets a deploy prove the machine answering is the release
+/// it just shipped rather than the previous one still running, and what an operator reads to
+/// learn what production runs. The version is no secret — every tag is published.
+async fn version() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "commit": option_env!("VAULT42_GIT_SHA").unwrap_or("unknown"),
+    }))
 }

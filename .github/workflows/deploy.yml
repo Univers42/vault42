@@ -1,8 +1,15 @@
 name: deploy
 
-# Deploys both fly.io apps, but only behind a green vault42-ci on the same commit. The gate
-# battery is the repo's only end-to-end coverage, so a deploy that did not wait for it would
-# put an unverified binary in front of the vault.
+# Deploys both fly.io apps when a release tag is pushed — which auto-release.yml does for every
+# commit vault42-ci passes on develop — and only once it has re-checked that CI passed on that
+# commit. The gate battery is the repo's only end-to-end coverage, so a deploy that did not wait
+# for it would put an unverified binary in front of the vault.
+#
+# WHAT RUNS IN PRODUCTION IS A VERSION. It used to be "whatever develop was when CI last went
+# green", recorded nowhere. Each image is labelled with its release (registry.fly.io/<app>:vX.Y.Z,
+# shown by `fly status` and `42ctl cloud status`), the authority binary carries the version and
+# commit it answers on /version, and the smoke test refuses a deploy whose authority does not
+# report the release that was just shipped.
 #
 # COST. Both apps scale to zero, so the standing bill is two 1 GB volumes and nothing else.
 # A deploy costs the runner's build time (free on a public repo) plus the seconds each machine
@@ -27,10 +34,9 @@ name: deploy
 # server that looks perfectly healthy.
 
 on:
-  workflow_run:
-    workflows: ["vault42-ci"]
-    types: [completed]
-    branches: [develop]
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
       target:
@@ -52,6 +58,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   # Pinned rather than :latest — this container is handed a token that can create and destroy
@@ -64,29 +71,59 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # workflow_run fires on failure too, so without the conclusion check a red CI would still
-    # deploy. The other two conditions close the pwn-request hole: `branches: [develop]` filters
-    # on the HEAD branch name, which a fork can choose, so a pull request from a fork branch
-    # named `develop` would otherwise reach this job and its fly deploy token.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
+    # A tag push can only come from somebody with write access (a fork cannot push a tag here),
+    # so the pwn-request guard the workflow_run trigger needed has nothing left to guard. What CI
+    # did is checked explicitly below instead of being implied by the trigger.
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       TARGET: ${{ inputs.target || 'both' }}
     steps:
-      # The commit CI actually verified, not whatever develop points at now. They differ
-      # whenever a second push lands while the first is still building.
+      # Depth 2, because a release commit is checked through its parent below.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          fetch-depth: 2
 
+      # A release commit only changes version numbers, so the CI run that counts is its parent's —
+      # the green commit auto-release.yml released. A tag somebody pushed by hand on a commit CI
+      # never passed is refused here rather than deployed.
+      - name: deploy only what vault42-ci passed
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          candidates=$(git rev-parse HEAD)
+          case "$(git log -1 --format=%s)" in
+            "release: v"*) candidates="$candidates $(git rev-parse HEAD^)" ;;
+          esac
+          for sha in $candidates; do
+            passed=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${sha}&event=push&status=success" --jq '.total_count')
+            if [ "$passed" -gt 0 ]; then
+              printf 'vault42-ci passed on %s\n' "$sha"
+              exit 0
+            fi
+          done
+          printf 'refusing: no successful vault42-ci push run for %s\n' "$candidates"
+          exit 1
+
+      # The label is the tag when this is one, so `fly status` names the release; a manual deploy
+      # of anything else is labelled with its commit too, so it can never pass for a release.
       - name: record what is being deployed
         run: |
-          printf 'commit: %s\n' "$(git rev-parse HEAD)"
-          printf 'target: %s\n' "$TARGET"
+          set -eu
+          version=$(sh scripts/ops/release-version.sh current)
+          commit=$(git rev-parse HEAD)
+          if [ "$GITHUB_REF" = "refs/tags/v${version}" ]; then
+            label="v${version}"
+          else
+            label="v${version}-g$(git rev-parse --short=7 HEAD)"
+          fi
+          printf 'commit: %s\nversion: %s\nlabel: %s\ntarget: %s\n' "$commit" "$version" "$label" "$TARGET"
+          {
+            echo "VAULT42_VERSION=${version}"
+            echo "VAULT42_COMMIT=${commit}"
+            echo "IMAGE_LABEL=${label}"
+          } >> "$GITHUB_ENV"
 
       # The authority's own secrets, staged from this repository's before the release that
       # applies them. Without this the deploy is NOT reproducible: an app recreated from
@@ -155,7 +192,8 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$PWD":/work -w /work "$FLYCTL" \
             deploy --config fly.authority.toml --app vault42-authority \
-                   --local-only --ha=false --yes
+                   --local-only --ha=false --yes \
+                   --image-label "$IMAGE_LABEL" --build-arg "VAULT42_GIT_SHA=$VAULT42_COMMIT"
 
       # Fetched from the live authority and CHECKED before it is stored. The runbook used to
       # pipe curl straight into `fly secrets set`, so an authority that was briefly unreachable
@@ -184,13 +222,20 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$PWD":/work -w /work "$FLYCTL" \
             deploy --config fly.toml --app vault42-server \
-                   --local-only --ha=false --yes
+                   --local-only --ha=false --yes \
+                   --image-label "$IMAGE_LABEL"
 
       # The deploy is not finished until the deployed thing answers. This is the only check in
       # the repo that can see a volume that failed to mount, a secret that never reached the VM,
       # or a fly proxy that stopped speaking h2c to tonic.
+      # A server-only deploy leaves the authority as it was, so only a deploy that shipped the
+      # authority can demand that it answers as this release.
       - name: smoke the live deployment
-        run: sh scripts/smoke/post-deploy.sh
+        run: |
+          if [ "$TARGET" != "server" ]; then
+            export EXPECT_VERSION="$VAULT42_VERSION" EXPECT_COMMIT="$VAULT42_COMMIT"
+          fi
+          sh scripts/smoke/post-deploy.sh
 
       # Machines wake to serve the smoke test. auto_stop returns them on its own, but only after
       # an idle timeout that bills for minutes nobody used. Stopping them here makes the deploy

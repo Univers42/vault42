@@ -57,6 +57,28 @@ assert_authority_is_healthy() {
 	printf 'ok  authority healthy (volume mounted, signing key intact)\n'
 }
 
+# The release this deploy shipped must be the one answering. A deploy can report success while
+# the previous machine keeps serving — a release rolled back after a failed health check, or a
+# machine that never took the new image — and every other check here would pass against it.
+# EXPECT_VERSION / EXPECT_COMMIT come from the deploy; run by hand without them, this is skipped.
+assert_authority_is_the_release() {
+	if [ -z "${EXPECT_VERSION:-}" ]; then
+		printf 'skip authority release not checked (no EXPECT_VERSION)\n'
+		return 0
+	fi
+	curl -fsS --max-time 20 "$AUTHORITY/version" >"$WORK/version.json" ||
+		fail "/version did not answer; the authority predates versioned releases"
+	got="$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' <"$WORK/version.json")"
+	[ "$got" = "$EXPECT_VERSION" ] ||
+		fail "the authority answers as '$got', not the release $EXPECT_VERSION just deployed"
+	if [ -n "${EXPECT_COMMIT:-}" ]; then
+		commit="$(sed -n 's/.*"commit":"\([^"]*\)".*/\1/p' <"$WORK/version.json")"
+		[ "$commit" = "$EXPECT_COMMIT" ] ||
+			fail "the authority was built from '$commit', not $EXPECT_COMMIT"
+	fi
+	printf 'ok  authority answers as v%s, built from %s\n' "$got" "${EXPECT_COMMIT:-an unchecked commit}"
+}
+
 # The key must be 64 lowercase hex. An empty or truncated answer is the exact failure the
 # runbook's `curl | fly secrets set` recipe used to turn into a server that accepted any
 # self-generated keypair, so this checks the shape rather than merely that a request answered.
@@ -114,6 +136,7 @@ assert_server_requires_auth() {
 main() {
 	printf 'smoke: authority=%s server=%s\n' "$AUTHORITY" "$SERVER"
 	assert_authority_is_healthy
+	assert_authority_is_the_release
 	assert_contract_key_is_usable
 	assert_authority_guard_is_live
 	assert_server_speaks_grpc

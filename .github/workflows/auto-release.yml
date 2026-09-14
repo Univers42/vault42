@@ -1,0 +1,149 @@
+# Release every commit vault42-ci passes on develop, and let the release deploy itself.
+#
+# vault42 had its tags cut by hand — the last one in June, while Cargo.toml still said 0.1.0 — so
+# nothing said which code production ran: "deployed" meant whatever develop was when CI last went
+# green. Now every green develop commit becomes a version:
+#
+#   1. scripts/ops/release-version.sh picks it: the Cargo.toml version when no tag names it yet (a
+#      minor or major raised deliberately in a pull request with `release-version.sh set`), else
+#      the next untagged patch;
+#   2. a `release: vX.Y.Z` commit carries the bump in Cargo.toml and Cargo.lock, tagged vX.Y.Z;
+#   3. develop and the tag are pushed together (--atomic), and main is fast-forwarded to them;
+#   4. a GitHub Release is published with generated notes.
+#
+# The tag push is what deploys both fly apps (deploy.yml, which re-checks that CI passed) and what
+# publishes docker.io/dlesieur/vault42:vX.Y.Z (docker.yml). It is pushed with GH_PAT, never
+# GITHUB_TOKEN: GitHub starts no workflow for anything a job's own token pushes, so a tag pushed
+# with it would release nothing and deploy nothing.
+#
+# On workflow_run of vault42-ci, so a red commit is never released. The release commit's own CI run
+# arrives back here and is skipped by its subject, which is what stops the loop.
+name: auto-release
+
+on:
+  workflow_run:
+    workflows: [vault42-ci]
+    types: [completed]
+    branches: [develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  cut:
+    name: release the green commit
+    # The same three guards deploy.yml used: a red run, a pull request, and a fork branch that
+    # happens to be called develop must not reach a job holding GH_PAT.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      !startsWith(github.event.workflow_run.head_commit.message, 'release: v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: GH_PAT must be configured
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          [ -n "$GH_PAT" ] || {
+            echo "secret GH_PAT is unset — a tag pushed with GITHUB_TOKEN starts no deploy and no" >&2
+            echo "image build, so this would cut versions that never reach production." >&2
+            exit 1
+          }
+
+      - name: Release only the revision CI just passed
+        id: guard
+        env:
+          GREEN: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          if [ "$head" = "$GREEN" ]; then
+            echo "cut=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "cut=false" >> "$GITHUB_OUTPUT"
+            echo "develop moved to ${head} since ${GREEN} went green; that commit's own CI releases it"
+          fi
+
+      - name: Resolve the version
+        id: version
+        if: steps.guard.outputs.cut == 'true'
+        run: |
+          cur=$(sh scripts/ops/release-version.sh current)
+          next=$(sh scripts/ops/release-version.sh next)
+          echo "next=${next}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${next}" >> "$GITHUB_OUTPUT"
+          if [ "$next" = "$cur" ]; then echo "bump=false" >> "$GITHUB_OUTPUT"; else echo "bump=true" >> "$GITHUB_OUTPUT"; fi
+          echo "releasing v${next} (Cargo.toml says ${cur})"
+
+      - name: Bump Cargo.toml and Cargo.lock
+        if: steps.guard.outputs.cut == 'true' && steps.version.outputs.bump == 'true'
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+        run: sh scripts/ops/release-version.sh set "$NEXT"
+
+      - name: Commit, tag, and push develop and the tag together
+        id: push
+        if: steps.guard.outputs.cut == 'true'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          TAG: ${{ steps.version.outputs.tag }}
+          BUMP: ${{ steps.version.outputs.bump }}
+          GREEN: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          git config user.name "vault42 release"
+          git config user.email "noreply@github.com"
+          if [ "$BUMP" = "true" ]; then
+            git add Cargo.toml Cargo.lock
+            git commit -q -m "release: ${TAG}"
+          fi
+          git tag -a "$TAG" -m "vault42 ${TAG}"
+          remote="https://github.com/${GITHUB_REPOSITORY}.git"
+          # shellcheck disable=SC2016
+          helper='!f() { printf "username=x-access-token\npassword=%s\n" "$GH_PAT"; }; f'
+          if git -c credential.helper= -c "credential.helper=${helper}" \
+               push --atomic -q "$remote" HEAD:develop "refs/tags/${TAG}"; then
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+            echo "pushed ${TAG}: deploy.yml deploys it and docker.yml publishes its image"
+            exit 0
+          fi
+          now=$(git ls-remote "$remote" refs/heads/develop | cut -f1)
+          if [ "$now" != "$GREEN" ]; then
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            echo "develop moved to ${now} while this ran; nothing was pushed, and that commit's CI releases it"
+            exit 0
+          fi
+          echo "the push was refused and develop has not moved — see the error above" >&2
+          exit 1
+
+      # gitflow keeps main at the last release. A fast-forward only: if main has commits develop
+      # lacks (a hotfix not yet merged back), this warns and leaves main alone rather than
+      # overwriting them — the release and the deploy already happened either way.
+      - name: Fast-forward main to the release
+        if: steps.push.outputs.pushed == 'true'
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          # shellcheck disable=SC2016
+          helper='!f() { printf "username=x-access-token\npassword=%s\n" "$GH_PAT"; }; f'
+          git -c credential.helper= -c "credential.helper=${helper}" \
+            push -q "https://github.com/${GITHUB_REPOSITORY}.git" HEAD:main ||
+            echo "::warning::main is not an ancestor of this release; merge main back into develop"
+
+      - name: Publish the GitHub Release
+        if: steps.push.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "vault42 ${TAG}" --generate-notes

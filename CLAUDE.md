@@ -220,7 +220,11 @@ Vendored copies of grobase's rules live in `.claude/rules/` and apply to all cod
 
 ### Git
 
-gitflow: `feature/*` → `develop` → `release/x.y.0` → `main`, `hotfix/*` off `main`. **No
+gitflow: `feature/*` → `develop`, `hotfix/*` off `main`. **Releases cut themselves**: every commit
+`vault42-ci` passes on `develop` becomes the next patch (`auto-release.yml` → `release: vX.Y.Z`
+commit + tag + GitHub Release, `main` fast-forwarded), and the tag deploys (`deploy.yml`) and
+publishes the image (`docker.yml`). Raise a minor/major with `scripts/ops/release-version.sh set`
+in a PR. Never hand-push a `v*` tag casually — it deploys to production. **No
 `Co-Authored-By` and no "Generated with" trailer on any commit or PR body.** Pushes, tags, deploys,
 `fly secrets set`, and crypto-shred are irreversible — they need an explicit operator go-ahead, and
 the target must be re-verified at that moment rather than from an earlier scan.
