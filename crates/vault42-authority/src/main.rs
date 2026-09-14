@@ -41,6 +41,8 @@ mod e2e_scope;
 #[cfg(test)]
 mod e2e_secondfactor;
 #[cfg(test)]
+mod e2e_slugs;
+#[cfg(test)]
 mod e2e_vars;
 #[cfg(test)]
 mod e2e_wraps;

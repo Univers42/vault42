@@ -56,21 +56,67 @@ impl Store {
         .await
     }
 
-    /// Resolve a project reference (id or slug) to `(project_id, org_id)`.
+    /// Resolve a project reference (id or slug) within one organization to its id.
     ///
-    /// Returns the owning organization too, because most project routes do not carry the
-    /// organization in their path and still have to authorize against it.
-    pub async fn resolve_project(&self, reference: String) -> Result<Option<(String, String)>> {
+    /// A slug is unique only inside its organization (`UNIQUE (org_id, slug)`), so a lookup
+    /// that is not scoped to one picks whichever organization's project comes first. That is
+    /// what made every grant route answer 404 the moment a second organization created a
+    /// project with the same slug — `api`, `web`, the names everybody chooses.
+    pub async fn resolve_project_in_org(
+        &self,
+        org_id: String,
+        reference: String,
+    ) -> Result<Option<String>> {
         self.call(move |conn| {
             let found = conn.query_row(
-                "SELECT id, org_id FROM projects WHERE id=?1 OR slug=?1",
-                params![reference],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                "SELECT id FROM projects WHERE org_id=?1 AND (id=?2 OR slug=?2)",
+                params![org_id, reference],
+                |row| row.get::<_, String>(0),
             );
             match found {
-                Ok(pair) => Ok(Some(pair)),
+                Ok(id) => Ok(Some(id)),
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(error) => Err(Error::Internal(error.into())),
+            }
+        })
+        .await
+    }
+
+    /// Resolve a project reference (id or slug) among the organizations `account_id` belongs
+    /// to, to `(project_id, org_id)`, for routes whose path names no organization.
+    ///
+    /// Looking only where the caller is a member keeps another organization's projects out of
+    /// the answer, and out of the error too. A slug the caller holds in two organizations is
+    /// refused rather than resolved to either: acting on the wrong organization's project is
+    /// worse than asking for its id, which is unique.
+    pub async fn resolve_member_project(
+        &self,
+        account_id: String,
+        reference: String,
+    ) -> Result<Option<(String, String)>> {
+        self.call(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT p.id, p.org_id FROM projects p
+                       JOIN org_members m ON m.org_id = p.org_id
+                      WHERE m.account_id = ?1 AND (p.id = ?2 OR p.slug = ?2)
+                      LIMIT 2",
+                )
+                .map_err(|e| Error::Internal(e.into()))?;
+            let found = stmt
+                .query_map(params![account_id, reference], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| Error::Internal(e.into()))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| Error::Internal(e.into()))?;
+            match found.as_slice() {
+                [] => Ok(None),
+                [one] => Ok(Some(one.clone())),
+                _ => Err(Error::BadRequest(format!(
+                    "project {reference:?} names a project in more than one of your \
+                     organizations; use its id"
+                ))),
             }
         })
         .await

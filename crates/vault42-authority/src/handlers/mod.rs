@@ -95,7 +95,8 @@ async fn resolve_member(app: &App, org_id: &str, reference: String) -> Result<St
 /// Resolve a project reference and the caller's role in its organization.
 ///
 /// Most project routes do not carry the organization in their path, so the project is what
-/// establishes which organization to authorize against.
+/// establishes which organization to authorize against — found among the caller's own
+/// organizations, since a slug is unique only inside one.
 async fn project_context(
     app: &App,
     reference: String,
@@ -103,7 +104,7 @@ async fn project_context(
 ) -> Result<(String, String, OrgRole)> {
     let (project_id, org_id) = app
         .store
-        .resolve_project(reference)
+        .resolve_member_project(caller.account_id.clone(), reference)
         .await?
         .ok_or(Error::NotFound)?;
     let role = app
@@ -125,11 +126,11 @@ async fn project_admin(
     Ok((project_id, org_id))
 }
 
-/// Resolve an organization and a project from a path that names both, and check they agree.
+/// Resolve an organization and a project from a path that names both.
 ///
-/// Without the agreement check a caller could authorize against an organization they
-/// administer while acting on a project belonging to a different one, since the project
-/// reference alone decides what is modified.
+/// The project is looked up INSIDE that organization. Authorizing against an organization the
+/// caller administers while acting on a project of another is impossible by construction, and
+/// a slug that another organization also uses resolves to this organization's project.
 async fn org_project(
     app: &App,
     refs: (String, String),
@@ -137,14 +138,11 @@ async fn org_project(
 ) -> Result<(String, String, OrgRole)> {
     let (org_ref, project_ref) = refs;
     let (org_id, role) = org_context(app, org_ref, caller).await?;
-    let (project_id, project_org) = app
+    let project_id = app
         .store
-        .resolve_project(project_ref)
+        .resolve_project_in_org(org_id.clone(), project_ref)
         .await?
         .ok_or(Error::NotFound)?;
-    if project_org != org_id {
-        return Err(Error::NotFound);
-    }
     Ok((project_id, org_id, role))
 }
 

@@ -231,7 +231,9 @@ the target must be re-verified at that moment rather than from an earlier scan.
 
 ## Doc map
 
-`USERDOC.md` full user guide and the CLI reference · `DECISIONS.md` D0–D13 architecture record ·
+`docs/manual/` the operator's manual — deploying from nothing on Docker or fly.io, configuration, releases,
+backups — whose users' half is 42ctl's `docs/manual/` · `USERDOC.md` the older user guide and the retired
+`vault42-cli` reference · `DECISIONS.md` D0–D13 architecture record ·
 `THREAT-MODEL.md` adversaries and residual risks R1–R18 · `RUNBOOK.md` deploy, rotation, and what is
 shipped versus merely designed · `HUMAN-ATOMS.md` remaining human/account actions. `RUNBOOK.md` is
 the intended authority on which flag-gated features are live, but it was the source of three false
