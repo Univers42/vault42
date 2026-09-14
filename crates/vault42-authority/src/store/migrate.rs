@@ -328,33 +328,95 @@ CREATE TABLE IF NOT EXISTS attempts (
 );
 ";
 
-/// The ordered migration ledger: `(version, name, sql)`.
-const MIGRATIONS: &[(i64, &str, &str)] = &[
-    (1, "accounts_sessions_tenants", M1),
-    (2, "orgs_teams_invites", M2),
-    (3, "projects_envs_groups_pubkeys_grants", M3),
-    (4, "variables", M4),
-    (5, "grant_wraps_per_env_epoch", M5),
-    (6, "group_members_bound_to_org", M6),
-    (7, "otp_codes_and_escrow", M7),
-    (8, "attempts", M8),
+/// P9: a project group can be granted a role, like a user or a team.
+///
+/// Groups could be created, joined and left, and authorized nothing: the grants CHECK admitted
+/// `user` and `team` only. SQLite cannot alter a CHECK, so `grants` is rebuilt — and `grants` is
+/// a PARENT: `grant_wraps` references it `ON DELETE CASCADE`. A DROP with foreign keys enforced
+/// runs an implicit DELETE first, which would delete every wrap record in the database, so this
+/// migration is flagged `rebuilds_a_parent` and applied with foreign keys off, then checked.
+/// That is SQLite's own procedure for a schema change it cannot make with ALTER. The index goes
+/// with the old table and is recreated.
+const M9: &str = "
+CREATE TABLE grants_admitting_groups (
+  id           TEXT    NOT NULL PRIMARY KEY,
+  project_id   TEXT    NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  grantee_kind TEXT    NOT NULL CHECK (grantee_kind IN ('user','team','group')),
+  grantee_id   TEXT    NOT NULL,
+  project_role TEXT    NOT NULL CHECK (project_role IN ('read','write','admin')),
+  env_id       TEXT    REFERENCES environments(id) ON DELETE CASCADE,
+  granted_by   TEXT    NOT NULL REFERENCES accounts(id),
+  created_at   INTEGER NOT NULL,
+  revoked_at   INTEGER
+);
+INSERT INTO grants_admitting_groups
+  (id, project_id, grantee_kind, grantee_id, project_role, env_id, granted_by, created_at, revoked_at)
+  SELECT id, project_id, grantee_kind, grantee_id, project_role, env_id, granted_by, created_at, revoked_at
+    FROM grants;
+DROP TABLE grants;
+ALTER TABLE grants_admitting_groups RENAME TO grants;
+CREATE INDEX IF NOT EXISTS grants_project ON grants(project_id);
+";
+
+/// The ledger of what has been applied.
+const LEDGER: &str = "
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version    INTEGER NOT NULL PRIMARY KEY,
+  name       TEXT    NOT NULL,
+  applied_at INTEGER NOT NULL
+);";
+
+/// One schema step.
+struct Migration {
+    version: i64,
+    name: &'static str,
+    sql: &'static str,
+    /// True when the step drops and recreates a table other tables reference, which must run
+    /// with foreign keys off so the DROP does not cascade into them.
+    rebuilds_a_parent: bool,
+}
+
+/// A step that only adds or rebuilds tables nothing references.
+const fn step(version: i64, name: &'static str, sql: &'static str) -> Migration {
+    Migration {
+        version,
+        name,
+        sql,
+        rebuilds_a_parent: false,
+    }
+}
+
+/// The ordered migration ledger.
+const MIGRATIONS: &[Migration] = &[
+    step(1, "accounts_sessions_tenants", M1),
+    step(2, "orgs_teams_invites", M2),
+    step(3, "projects_envs_groups_pubkeys_grants", M3),
+    step(4, "variables", M4),
+    step(5, "grant_wraps_per_env_epoch", M5),
+    step(6, "group_members_bound_to_org", M6),
+    step(7, "otp_codes_and_escrow", M7),
+    step(8, "attempts", M8),
+    Migration {
+        version: 9,
+        name: "grants_admit_groups",
+        sql: M9,
+        rebuilds_a_parent: true,
+    },
 ];
 
 /// Apply every migration not yet recorded, in version order.
 pub(crate) fn run(conn: &mut rusqlite::Connection, now: i64) -> anyhow::Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS schema_migrations (
-           version    INTEGER NOT NULL PRIMARY KEY,
-           name       TEXT    NOT NULL,
-           applied_at INTEGER NOT NULL
-         );",
-    )?;
-    for (version, name, sql) in MIGRATIONS {
-        if is_applied(conn, *version)? {
+    conn.execute_batch(LEDGER)?;
+    for migration in MIGRATIONS {
+        if is_applied(conn, migration.version)? {
             continue;
         }
-        apply(conn, *version, name, sql, now)?;
-        tracing::info!(version, name, "authority migration applied");
+        apply(conn, migration, now)?;
+        tracing::info!(
+            version = migration.version,
+            name = migration.name,
+            "authority migration applied"
+        );
     }
     Ok(())
 }
@@ -370,19 +432,173 @@ fn is_applied(conn: &rusqlite::Connection, version: i64) -> anyhow::Result<bool>
 }
 
 /// Apply one migration and record it, atomically.
-fn apply(
+fn apply(conn: &mut rusqlite::Connection, migration: &Migration, now: i64) -> anyhow::Result<()> {
+    if migration.rebuilds_a_parent {
+        return apply_with_references_off(conn, migration, now);
+    }
+    let tx = conn.transaction()?;
+    tx.execute_batch(migration.sql)?;
+    record(&tx, migration, now)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Apply a step that rebuilds a referenced table, with foreign keys off for its duration only.
+///
+/// `PRAGMA foreign_keys` is a no-op inside a transaction, so it is switched around the
+/// transaction, and switched back on whether the step succeeded or not. Before committing, the
+/// step must leave no reference dangling — `pragma_foreign_key_check` is what enforcement would
+/// have said row by row — or it is rolled back.
+fn apply_with_references_off(
     conn: &mut rusqlite::Connection,
-    version: i64,
-    name: &str,
-    sql: &str,
+    migration: &Migration,
+    now: i64,
+) -> anyhow::Result<()> {
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+    let applied = rebuild_checked(conn, migration, now);
+    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+    applied
+}
+
+/// The transaction behind `apply_with_references_off`: run, refuse dangling references, record.
+fn rebuild_checked(
+    conn: &mut rusqlite::Connection,
+    migration: &Migration,
     now: i64,
 ) -> anyhow::Result<()> {
     let tx = conn.transaction()?;
-    tx.execute_batch(sql)?;
-    tx.execute(
-        "INSERT INTO schema_migrations(version, name, applied_at) VALUES(?1,?2,?3)",
-        rusqlite::params![version, name, now],
-    )?;
+    tx.execute_batch(migration.sql)?;
+    let dangling: i64 =
+        tx.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })?;
+    if dangling > 0 {
+        anyhow::bail!(
+            "migration {} {} would leave {dangling} dangling reference(s); rolled back",
+            migration.version,
+            migration.name
+        );
+    }
+    record(&tx, migration, now)?;
     tx.commit()?;
     Ok(())
+}
+
+/// Record `migration` as applied.
+fn record(tx: &rusqlite::Transaction<'_>, migration: &Migration, now: i64) -> anyhow::Result<()> {
+    tx.execute(
+        "INSERT INTO schema_migrations(version, name, applied_at) VALUES(?1,?2,?3)",
+        rusqlite::params![migration.version, migration.name, now],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A connection that enforces foreign keys, as `Store::open` configures every one.
+    fn enforced() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch("PRAGMA foreign_keys=ON;")
+            .expect("foreign keys on");
+        conn
+    }
+
+    /// Apply the ledger through `last`, as a binary from before the later migrations did.
+    fn migrate_through(conn: &mut rusqlite::Connection, last: i64) {
+        conn.execute_batch(LEDGER).expect("ledger");
+        for migration in MIGRATIONS.iter().filter(|m| m.version <= last) {
+            apply(conn, migration, 0).expect(migration.name);
+        }
+    }
+
+    /// One account, organization, project and environment, a grant, and a wrap recorded for it.
+    fn seed(conn: &rusqlite::Connection) {
+        conn.execute_batch(
+            "INSERT INTO accounts(id,email,password_hash,created_at) VALUES('a1','a@x.io','h',0);
+             INSERT INTO orgs(id,slug,name,created_by,created_at) VALUES('o1','o','O','a1',0);
+             INSERT INTO org_members(org_id,account_id,role,created_at) VALUES('o1','a1','owner',0);
+             INSERT INTO projects(id,org_id,slug,name,created_at) VALUES('p1','o1','p','P',0);
+             INSERT INTO environments(id,project_id,name,created_at) VALUES('e1','p1','prod',0);
+             INSERT INTO grants(id,project_id,grantee_kind,grantee_id,project_role,env_id,granted_by,created_at)
+               VALUES('g1','p1','user','a1','write','e1','a1',0);
+             INSERT INTO grant_wraps(grant_id,account_id,env_id,epoch,created_at)
+               VALUES('g1','a1','e1',1,0);",
+        )
+        .expect("seed");
+    }
+
+    fn count(conn: &rusqlite::Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .expect("count")
+    }
+
+    /// Rebuilding `grants` must not cost a single wrap record. `grant_wraps` references it with ON
+    /// DELETE CASCADE, so the obvious rebuild — drop and rename with foreign keys on — deletes
+    /// every wrap in the database as a side effect of the DROP, and rotation then re-wraps nobody.
+    #[test]
+    fn widening_grants_to_groups_keeps_every_wrap_and_every_reference() {
+        let mut conn = enforced();
+        migrate_through(&mut conn, 8);
+        seed(&conn);
+
+        run(&mut conn, 0).expect("the rest of the ledger applies");
+
+        assert_eq!(count(&conn, "grants"), 1, "the grant survives");
+        assert_eq!(
+            count(&conn, "grant_wraps"),
+            1,
+            "and so does its wrap record"
+        );
+        conn.execute(
+            "INSERT INTO grants(id,project_id,grantee_kind,grantee_id,project_role,granted_by,created_at)
+             VALUES('g2','p1','group','grp1','read','a1',0)",
+            [],
+        )
+        .expect("a group grant is storable");
+        assert!(
+            conn.execute(
+                "INSERT INTO grants(id,project_id,grantee_kind,grantee_id,project_role,granted_by,created_at)
+                 VALUES('g3','p1','robot','r1','read','a1',0)",
+                [],
+            )
+            .is_err(),
+            "an unknown grantee kind is still refused"
+        );
+        let keys_on: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("pragma");
+        assert_eq!(keys_on, 1, "foreign keys are enforced again afterwards");
+        conn.execute("DELETE FROM projects WHERE id='p1'", [])
+            .expect("delete project");
+        assert_eq!(
+            count(&conn, "grant_wraps"),
+            0,
+            "the rebuilt table still carries the cascade to its wraps"
+        );
+    }
+
+    /// A rebuild that would leave a reference dangling is rolled back, not committed.
+    #[test]
+    fn a_rebuild_that_would_dangle_a_reference_is_rolled_back() {
+        let mut conn = enforced();
+        migrate_through(&mut conn, 8);
+        seed(&conn);
+        let breaking = Migration {
+            version: 99,
+            name: "orphans_a_wrap",
+            sql: "DELETE FROM grants;",
+            rebuilds_a_parent: true,
+        };
+        let error = apply(&mut conn, &breaking, 0).expect_err("must refuse");
+        assert!(error.to_string().contains("dangling"), "{error}");
+        assert_eq!(count(&conn, "grants"), 1, "nothing was committed");
+        let keys_on: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("pragma");
+        assert_eq!(keys_on, 1, "foreign keys are back on even after a refusal");
+    }
 }

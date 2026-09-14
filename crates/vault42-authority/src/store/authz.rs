@@ -51,7 +51,12 @@ impl Store {
     }
 }
 
-/// Every project role granted to the account over this scope, directly or via a team.
+/// Every project role granted to the account over this scope: directly, via a team, or via one
+/// of the project's groups.
+///
+/// Group membership is bound to organization membership by a composite foreign key that
+/// cascades, so leaving the organization ends a group grant the same way it ends a team grant,
+/// with no removal path to forget.
 fn granted_roles(
     conn: &rusqlite::Connection,
     project_id: &str,
@@ -69,6 +74,9 @@ fn granted_roles(
                    OR (g.grantee_kind = 'team' AND EXISTS (
                          SELECT 1 FROM team_members tm
                           WHERE tm.team_id = g.grantee_id AND tm.account_id = ?2))
+                   OR (g.grantee_kind = 'group' AND EXISTS (
+                         SELECT 1 FROM group_members gm
+                          WHERE gm.group_id = g.grantee_id AND gm.account_id = ?2))
                 )",
         )
         .map_err(|e| Error::Internal(e.into()))?;

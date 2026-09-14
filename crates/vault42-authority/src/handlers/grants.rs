@@ -100,7 +100,8 @@ pub struct FulfilledResp {
     missing: Vec<String>,
 }
 
-/// Grant a role on a project to a user or a team. Administrators only.
+/// Grant a role on a project to a user, a team, or one of the project's groups. Administrators
+/// only.
 pub async fn create(
     State(app): State<Arc<App>>,
     caller: Principal,
@@ -109,13 +110,18 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<GrantResp>)> {
     let (project_id, org_id, role) = org_project(&app, (org, project), &caller).await?;
     role.require_admin()?;
-    if body.grantee_kind != "user" && body.grantee_kind != "team" {
+    if !matches!(body.grantee_kind.as_str(), "user" | "team" | "group") {
         return Err(Error::BadRequest(
-            "grantee_kind must be user or team".into(),
+            "grantee_kind must be user, team or group".into(),
         ));
     }
     let project_role = ProjectRole::parse(&body.project_role)?;
-    let grantee_id = resolve_grantee(&app, &org_id, (&body.grantee_kind, body.grantee_id)).await?;
+    let grantee_id = resolve_grantee(
+        &app,
+        (&org_id, &project_id),
+        (&body.grantee_kind, body.grantee_id),
+    )
+    .await?;
     let env_id = resolve_env(&app, &project_id, body.env_id).await?;
     let id = uuid::Uuid::new_v4().to_string();
     app.store
@@ -143,22 +149,39 @@ pub async fn create(
 ///
 /// A team is resolved within the organization, so a slug belonging to a different org still
 /// cannot be granted. A user is resolved within its membership, so only somebody already in
-/// the organization can be named.
-async fn resolve_grantee(app: &App, org_id: &str, grantee: (&str, String)) -> Result<String> {
+/// the organization can be named. A group is resolved within the PROJECT: groups belong to one
+/// project, and granting one on another would reach people nobody chose for it.
+async fn resolve_grantee(
+    app: &App,
+    scope: (&str, &str),
+    grantee: (&str, String),
+) -> Result<String> {
+    let (org_id, project_id) = scope;
     let (kind, reference) = grantee;
-    let resolved = if kind == "team" {
-        app.store
-            .resolve_team(org_id.to_string(), reference.clone())
-            .await?
-    } else {
-        let normalized =
-            crate::validate::normalize_email(&reference).unwrap_or_else(|_| reference.clone());
-        app.store
-            .resolve_org_member(org_id.to_string(), normalized)
-            .await?
+    let resolved = match kind {
+        "team" => {
+            app.store
+                .resolve_team(org_id.to_string(), reference.clone())
+                .await?
+        }
+        "group" => group_of_project(app, project_id, &reference).await?,
+        _ => {
+            let normalized =
+                crate::validate::normalize_email(&reference).unwrap_or_else(|_| reference.clone());
+            app.store
+                .resolve_org_member(org_id.to_string(), normalized)
+                .await?
+        }
     };
-    resolved
-        .ok_or_else(|| Error::BadRequest(format!("no {kind} {reference:?} in this organization")))
+    resolved.ok_or_else(|| Error::BadRequest(format!("no {kind} {reference:?} in this project")))
+}
+
+/// The group's id, when it exists and belongs to `project_id`.
+async fn group_of_project(app: &App, project_id: &str, group_id: &str) -> Result<Option<String>> {
+    let found = app.store.resolve_group(group_id.to_string()).await?;
+    Ok(found
+        .filter(|(owner, _)| owner == project_id)
+        .map(|_| group_id.to_string()))
 }
 
 /// Resolve an optional environment reference (id or name) within the project.

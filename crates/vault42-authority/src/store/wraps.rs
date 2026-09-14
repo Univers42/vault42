@@ -115,8 +115,8 @@ fn check_wrap_env(conn: &rusqlite::Connection, grant_id: &str, env_id: &str) -> 
     }
 }
 
-/// Every account the grant authorizes: the named user, or the team's current membership —
-/// in both cases only while they still belong to the project's organization.
+/// Every account the grant authorizes: the named user, or the team's or group's current
+/// membership — in every case only while they still belong to the project's organization.
 ///
 /// The organization join is what makes offboarding real for a direct user grant. `grantee_id`
 /// is polymorphic (a user or a team) so it carries no foreign key, which meant a grant kept
@@ -133,14 +133,22 @@ fn authorized_members(conn: &rusqlite::Connection, grant_id: &str) -> Result<Vec
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|_| Error::NotFound)?;
-    if kind == "user" {
-        return granted_user_if_still_a_member(conn, grant_id, &grantee);
+    match kind.as_str() {
+        "user" => granted_user_if_still_a_member(conn, grant_id, &grantee),
+        "team" => collect_accounts(
+            conn,
+            "SELECT account_id FROM team_members WHERE team_id=?1 ORDER BY account_id",
+            &grantee,
+        ),
+        "group" => collect_accounts(
+            conn,
+            "SELECT account_id FROM group_members WHERE group_id=?1 ORDER BY account_id",
+            &grantee,
+        ),
+        other => Err(Error::Internal(anyhow::anyhow!(
+            "grant {grant_id} names an unknown grantee kind {other:?}"
+        ))),
     }
-    collect_accounts(
-        conn,
-        "SELECT account_id FROM team_members WHERE team_id=?1 ORDER BY account_id",
-        &grantee,
-    )
 }
 
 /// The user a direct grant names, but only while they still belong to the project's
