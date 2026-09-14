@@ -22,5 +22,17 @@ placeholders: `REGISTER_TOKEN`, `AUTH_HOST`. `example.org` names stand for your 
 
 > A block like this is a warning: an action that cannot be undone, or a mistake that fails silently.
 
+## How this manual is kept true
+
+Chapter 2 §2.2–2.6 and the Docker backups of chapter 6 §6.2 are **executed as written**: 42ctl's
+`qa/live/self-host.sh` extracts their shell blocks from the release under test, runs them on an empty
+machine, drives the 42ctl walkthrough (that manual's chapter 13) through the deployment they built, then
+takes the backups and checks the deployment still serves. The **walkthrough** workflow in the 42ctl
+repository runs it.
+
+Not executed: the TLS proxies of §2.7, the optional features of §2.8, chapter 3 beyond what production's
+own pipeline does on every release, restores, and contract-key rotation, which chapter 6 says has no
+tested procedure.
+
 Where this manual and a comment in the code disagree, the code is right and the manual has a bug:
 report it.
