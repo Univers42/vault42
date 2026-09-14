@@ -41,7 +41,7 @@ existing release.
 ## 5.3 What is running
 
 ```sh
-curl -fsS https://vault42-authority.fly.dev/version
+curl -fsS -w '\n' https://vault42-authority.fly.dev/version
 ```
 
 answers `{"commit":"…","version":"0.2.3"}`. The fly image of each application is labelled with the same

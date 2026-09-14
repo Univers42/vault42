@@ -52,8 +52,8 @@ docker run -d --name vault42-authority --network vault42 --restart unless-stoppe
   -p 127.0.0.1:8444:8444 \
   -e VAULT42_REGISTER_TOKEN="$REGISTER_TOKEN" \
   vault42-authority:v0.2.2
-curl -fsS --retry 30 --retry-all-errors --retry-delay 1 http://127.0.0.1:8444/healthz
-curl -fsS http://127.0.0.1:8444/version
+curl -fsS -w '\n' --retry 30 --retry-all-errors --retry-delay 1 http://127.0.0.1:8444/healthz
+curl -fsS -w '\n' http://127.0.0.1:8444/version
 ```
 
 `/healthz` answers `ok` once the authority listens, which takes a moment after `docker run` returns: the

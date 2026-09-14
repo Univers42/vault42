@@ -89,7 +89,7 @@ Nothing is manual. Every commit that `vault42-ci` passes on `develop` becomes a 
 deploys itself (chapter 5). Check what production runs:
 
 ```sh
-curl -fsS https://AUTH_APP.fly.dev/version
+curl -fsS -w '\n' https://AUTH_APP.fly.dev/version
 ```
 
 ## 3.8 Pointing 42ctl at it

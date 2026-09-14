@@ -3,10 +3,10 @@
 ## 6.1 Is it up, and what is it running?
 
 ```sh
-curl -fsS https://vault42-authority.fly.dev/healthz        # ok
-curl -fsS https://vault42-authority.fly.dev/version        # {"commit":"…","version":"…"}
-curl -fsS https://vault42-authority.fly.dev/v1/contract-key
-sh scripts/smoke/post-deploy.sh                            # the deploy's own checks
+curl -fsS -w '\n' https://vault42-authority.fly.dev/healthz        # ok
+curl -fsS -w '\n' https://vault42-authority.fly.dev/version        # {"commit":"…","version":"…"}
+curl -fsS -w '\n' https://vault42-authority.fly.dev/v1/contract-key
+sh scripts/smoke/post-deploy.sh                                  # the deploy's own checks
 ```
 
 `42ctl cloud health` checks the fly.io side as well: machines, volumes, snapshot age (42ctl manual,
