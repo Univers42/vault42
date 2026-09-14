@@ -52,18 +52,19 @@ docker run -d --name vault42-authority --network vault42 --restart unless-stoppe
   -p 127.0.0.1:8444:8444 \
   -e VAULT42_REGISTER_TOKEN="$REGISTER_TOKEN" \
   vault42-authority:v0.2.2
-curl -fsS http://127.0.0.1:8444/healthz
+curl -fsS --retry 30 --retry-all-errors --retry-delay 1 http://127.0.0.1:8444/healthz
 curl -fsS http://127.0.0.1:8444/version
 ```
 
-`/healthz` answers `ok`; `/version` answers the release and commit you built. On first start the
-authority creates its database and its signing key on the volume.
+`/healthz` answers `ok` once the authority listens, which takes a moment after `docker run` returns: the
+retries wait for it, up to thirty seconds. `/version` answers the release and commit you built. On first
+start the authority creates its database and its signing key on the volume.
 
 ## 2.5 Start the server, pinned to the authority's key
 
 ```sh
 KEY="$(curl -fsS http://127.0.0.1:8444/v1/contract-key | sed 's/.*"public_key":"//;s/".*//')"
-[ "${#KEY}" -eq 64 ] || { echo "refusing: the authority returned a ${#KEY}-character key"; exit 1; }
+printf '%s\n' "$KEY" | grep -Eqx '[0-9a-f]{64}' &&
 docker run -d --name vault42-server --network vault42 --restart unless-stopped \
   -v vault42-server-data:/data \
   -p 127.0.0.1:8443:8443 \
@@ -73,8 +74,10 @@ docker run -d --name vault42-server --network vault42 --restart unless-stopped \
 docker logs vault42-server 2>&1 | tail -3
 ```
 
-**Check the key before using it.** A failed `curl` would otherwise hand the server an empty value, and it
-would refuse to start — or, on an older release, start without checking contracts at all.
+**Check the key before using it.** The `grep` lets `docker run` go ahead only with 64 hexadecimal
+characters. A failed `curl` would otherwise hand the server an empty value, and it would refuse to start —
+or, on an older release, start without checking contracts at all. If nothing starts, print `$KEY` and read
+the authority's logs.
 
 ## 2.6 Use it from 42ctl, on the same host
 
