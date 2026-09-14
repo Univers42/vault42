@@ -17,7 +17,7 @@ auth, ABAC, tenant isolation, a tamper-evident audit chain, and an at-rest CMEK 
 All plaintext crypto happens **client-side** (XChaCha20-Poly1305 over a random DEK; the DEK wrapped
 per recipient via X25519; an Ed25519 author signature over a frozen canonical AAD; Argon2id keystore).
 
-## Using it → [`USERDOC.md`](USERDOC.md)
+## Running it → [the operator's manual](docs/manual/README.md) · using it → [the 42ctl manual](https://github.com/Univers42/42ctl/tree/main/docs/manual)
 
 Full user guide (install, the CLI, registration, sharing, self-hosting, troubleshooting):
 **[`USERDOC.md`](USERDOC.md)**. A live instance is running as a two-app, scale-to-zero duo:
