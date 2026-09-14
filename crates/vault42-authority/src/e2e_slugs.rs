@@ -99,7 +99,10 @@ async fn two_organizations_can_both_grant_on_a_project_slug_they_share() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{by_id}");
-    assert_eq!(by_id, listed, "the slug and the id must name the same project");
+    assert_eq!(
+        by_id, listed,
+        "the slug and the id must name the same project"
+    );
 }
 
 #[tokio::test]
@@ -166,7 +169,11 @@ async fn a_slug_the_caller_holds_in_two_organizations_is_refused_not_guessed() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "the id is never ambiguous: {body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the id is never ambiguous: {body}"
+    );
 }
 
 #[tokio::test]
