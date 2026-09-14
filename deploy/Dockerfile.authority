@@ -16,6 +16,10 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY . .
+# The commit this image is built from, stamped into the binary for `/version`. The deploy passes it;
+# a build without it says "unknown" rather than guessing.
+ARG VAULT42_GIT_SHA=unknown
+ENV VAULT42_GIT_SHA=$VAULT42_GIT_SHA
 RUN cargo build --release --bin vault42-authority \
  && cp target/release/vault42-authority /vault42-authority
 

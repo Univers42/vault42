@@ -189,6 +189,19 @@ async fn healthz_and_contract_key_are_public() {
 }
 
 #[tokio::test]
+async fn version_names_the_release_this_was_built_as() {
+    let app = fresh_app("version", None);
+    let request = Request::builder()
+        .uri("/version")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(&app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+    assert!(body["commit"].as_str().is_some_and(|c| !c.is_empty()));
+}
+
+#[tokio::test]
 async fn signup_then_login_then_me_round_trips() {
     let app = fresh_app("roundtrip", None);
     let token = signed_up(&app, "dev@archicode.codes").await;
