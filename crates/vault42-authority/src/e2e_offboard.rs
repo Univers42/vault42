@@ -36,7 +36,7 @@ use std::sync::Arc;
 use vault42_core::Identity;
 
 /// A DELETE carrying a bearer token.
-fn delete_as(path: &str, token: &str) -> Request<Body> {
+pub(crate) fn delete_as(path: &str, token: &str) -> Request<Body> {
     Request::builder()
         .method("DELETE")
         .uri(path)
@@ -46,7 +46,7 @@ fn delete_as(path: &str, token: &str) -> Request<Body> {
 }
 
 /// Sign somebody up, invite them into `org` at `role`, accept, and return `(token, id)`.
-async fn joined(
+pub(crate) async fn joined(
     app: &Arc<crate::app::App>,
     owner: &str,
     org: &str,
@@ -97,7 +97,12 @@ async fn granted_members(
 }
 
 /// Whether an account appears in the organization's member list.
-async fn is_org_member(app: &Arc<crate::app::App>, token: &str, org: &str, who: &str) -> bool {
+pub(crate) async fn is_org_member(
+    app: &Arc<crate::app::App>,
+    token: &str,
+    org: &str,
+    who: &str,
+) -> bool {
     let (_, body) = send(
         app,
         get_with(

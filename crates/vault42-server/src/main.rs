@@ -36,6 +36,7 @@ mod ops_rotate;
 mod ops_scope;
 mod ops_write;
 mod principal;
+mod purge;
 mod scope_store;
 mod secret_read;
 mod secret_write;
@@ -53,18 +54,37 @@ use svc::{connect_grobase, VaultSvc};
 use vault42_proto::vault::v1::vault_server::VaultServer;
 
 /// Entry point. `--healthcheck` probes the listener for the container health check;
-/// otherwise it builds the runtime and serves until terminated.
+/// `purge-owner <fp>` erases one owner's rows (see `purge.rs`); otherwise it builds the
+/// runtime and serves until terminated.
 fn main() -> ExitCode {
     if std::env::args().any(|arg| arg == "--healthcheck") {
         return healthcheck();
     }
-    match run() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let outcome = match args.first().map(String::as_str) {
+        Some("purge-owner") => purge(args.get(1)),
+        _ => run(),
+    };
+    match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("vault42-server: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Purge one owner from the SQLite store named by `VAULT42_DB`, read directly so an operator
+/// does not need the serving gate configured to run it.
+fn purge(owner: Option<&String>) -> anyhow::Result<()> {
+    let owner = owner.ok_or_else(|| anyhow::anyhow!("usage: vault42-server purge-owner <fp>"))?;
+    let db = std::env::var("VAULT42_DB").unwrap_or_else(|_| "/data/vault42.db".to_string());
+    let purged = purge::purge_owner(&db, owner)?;
+    println!(
+        "purged {owner} from {db}: {} secrets, {} audit, {} scope_keys",
+        purged.secrets, purged.audit, purged.scope_keys
+    );
+    Ok(())
 }
 
 /// Initialise tracing, read config, and drive the async server on a multi-thread runtime.

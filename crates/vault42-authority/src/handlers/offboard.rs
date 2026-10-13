@@ -146,12 +146,32 @@ pub async fn account(State(app): State<Arc<App>>, caller: Principal) -> Result<J
     Ok(removed())
 }
 
+/// Erase a member's whole account, not just their seat in this organization.
+///
+/// The self-only rule above stops one organization's administrator reaching a global account.
+/// This route keeps that promise by asking more, not less: the caller must be allowed to remove
+/// the member from EVERY organization the member belongs to, under the same hierarchy as a single
+/// removal. An owner erases somebody who exists only inside organizations that owner runs; anybody
+/// with a seat elsewhere has to be removed here and left to the rest of their organizations.
+pub async fn member_account(
+    State(app): State<Arc<App>>,
+    caller: Principal,
+    Path((org, user)): Path<(String, String)>,
+) -> Result<Json<RemovedResp>> {
+    let (org_id, _) = org_context(&app, org, &caller).await?;
+    let user = resolve_member(&app, &org_id, user).await?;
+    app.store
+        .erase_member_account(caller.account_id, (org_id, user), may_remove)
+        .await?;
+    Ok(removed())
+}
+
 /// Whether `caller` may remove `target` from an organization.
 ///
 /// Leaving is always allowed, so nobody can be trapped in an organization. Removing anyone else
 /// requires administering it. Unseating an owner or an admin requires being an owner: without
 /// that rule an admin could remove every owner and inherit the organization.
-fn may_remove(caller: (&str, OrgRole), target: (&str, OrgRole)) -> Result<()> {
+pub(crate) fn may_remove(caller: (&str, OrgRole), target: (&str, OrgRole)) -> Result<()> {
     if caller.0 == target.0 {
         return Ok(());
     }
