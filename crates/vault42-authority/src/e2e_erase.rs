@@ -85,7 +85,7 @@ async fn an_owner_erases_a_member_account_and_every_trace_of_the_address() {
         &app,
         post(
             "/v1/auth/login",
-            json!({"email": bob_mail, "password": "wrong-guess-123456"}),
+            json!({"email": bob_mail, "password": format!("{PASSWORD}-wrong")}),
         ),
     )
     .await;
