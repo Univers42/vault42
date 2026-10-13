@@ -74,6 +74,10 @@ fn org_routes() -> Router<Arc<App>> {
         .route("/v1/orgs/:org", get(orgs::show))
         .route("/v1/orgs/:org/members", get(orgs::members))
         .route("/v1/orgs/:org/members/:user", delete(offboard::org_member))
+        .route(
+            "/v1/orgs/:org/members/:user/account",
+            delete(offboard::member_account),
+        )
         .route("/v1/orgs/:org/invites", post(orgs::invite))
         .route("/v1/orgs/:org/teams", post(teams::create).get(teams::list))
         .route("/v1/orgs/:org/teams/:team/members", post(teams::add_member))

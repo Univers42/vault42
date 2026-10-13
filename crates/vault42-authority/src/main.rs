@@ -29,6 +29,8 @@ mod contract;
 #[cfg(test)]
 mod e2e;
 #[cfg(test)]
+mod e2e_erase;
+#[cfg(test)]
 mod e2e_github;
 #[cfg(test)]
 mod e2e_groups;

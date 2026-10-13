@@ -32,7 +32,11 @@
 
 use super::Store;
 use crate::error::{Error, Result};
+use crate::rbac::OrgRole;
 use rusqlite::params;
+
+/// The hierarchy rule deciding whether `caller` may remove `target` from one organization.
+pub type MayRemove = fn((&str, OrgRole), (&str, OrgRole)) -> Result<()>;
 
 impl Store {
     /// Revoke a grant, so it authorizes nobody from now on.
@@ -125,14 +129,40 @@ impl Store {
         let now = vault42_contract::signing::now_unix();
         self.call(move |conn| {
             let tx = conn.transaction().map_err(|e| Error::Internal(e.into()))?;
-            require_owner_nowhere(&tx, &account_id)?;
-            revoke_all_user_grants(&tx, &account_id, now)?;
-            revoke_pending_invites(&tx, &account_id)?;
-            drop_all_memberships(&tx, &account_id)?;
-            release_tenants(&tx, &account_id)?;
-            if tombstone(&tx, &account_id)? == 0 {
-                return Err(Error::NotFound);
+            erase_in(&tx, &account_id, now)?;
+            tx.commit().map_err(|e| Error::Internal(e.into()))?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Erase somebody else's account, as `erase_account` does, when `caller` outranks them in
+    /// EVERY organization they belong to.
+    ///
+    /// An account is global and an organization is not, so authority over one organization is
+    /// not authority over the person: an owner of one org must not erase somebody who is also a
+    /// member of an org that owner has no say in. `may_remove` is the same hierarchy rule the
+    /// single-org removal applies, checked per organization inside the erasing transaction so a
+    /// promotion landing between the check and the erase cannot slip through.
+    ///
+    /// The target must still sit in `org_id` when the transaction runs: with no membership left
+    /// the per-organization check below would have nothing to refuse, and the erase would pass
+    /// unchecked.
+    pub async fn erase_member_account(
+        &self,
+        caller: String,
+        (org_id, target): (String, String),
+        may_remove: MayRemove,
+    ) -> Result<()> {
+        let now = vault42_contract::signing::now_unix();
+        self.call(move |conn| {
+            let tx = conn.transaction().map_err(|e| Error::Internal(e.into()))?;
+            super::require_org_membership(&tx, &org_id, &target)?;
+            for (mine, theirs) in standings(&tx, &caller, &target)? {
+                let mine = mine.ok_or(Error::Forbidden)?;
+                may_remove((caller.as_str(), mine), (target.as_str(), theirs))?;
             }
+            erase_in(&tx, &target, now)?;
             tx.commit().map_err(|e| Error::Internal(e.into()))?;
             Ok(())
         })
@@ -153,6 +183,90 @@ impl Store {
         })
         .await
     }
+}
+
+/// The erasure itself, inside the caller's transaction: refuse a last owner, take away every
+/// authorization, forget the address, then empty the row.
+fn erase_in(conn: &rusqlite::Connection, account_id: &str, now: i64) -> Result<()> {
+    require_owner_nowhere(conn, account_id)?;
+    let email = active_email(conn, account_id)?.ok_or(Error::NotFound)?;
+    revoke_all_user_grants(conn, account_id, now)?;
+    revoke_pending_invites(conn, account_id)?;
+    drop_all_memberships(conn, account_id)?;
+    release_tenants(conn, account_id)?;
+    forget_address(conn, (account_id, &email))?;
+    if tombstone(conn, account_id)? == 0 {
+        return Err(Error::NotFound);
+    }
+    Ok(())
+}
+
+/// The address of an account that has not been erased yet.
+fn active_email(conn: &rusqlite::Connection, account_id: &str) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT email FROM accounts WHERE id=?1 AND status='active'",
+        params![account_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| Error::Internal(e.into()))
+}
+
+/// Every organization `target` belongs to: the caller's role there (none when the caller is not
+/// a member of it) and the target's.
+fn standings(
+    conn: &rusqlite::Connection,
+    caller: &str,
+    target: &str,
+) -> Result<Vec<(Option<OrgRole>, OrgRole)>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT mine.role, theirs.role FROM org_members theirs
+               LEFT JOIN org_members mine
+                 ON mine.org_id=theirs.org_id AND mine.account_id=?1
+              WHERE theirs.account_id=?2",
+        )
+        .map_err(|e| Error::Internal(e.into()))?;
+    let rows = stmt
+        .query_map(params![caller, target], |row| {
+            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| Error::Internal(e.into()))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (mine, theirs) = row.map_err(|e| Error::Internal(e.into()))?;
+        let mine = mine.as_deref().map(OrgRole::parse).transpose()?;
+        out.push((mine, OrgRole::parse(&theirs)?));
+    }
+    Ok(out)
+}
+
+/// Remove the address from every table that is keyed by it rather than by the account id, which
+/// the tombstone alone never reached: second-factor codes, the key escrow, the throttle counters,
+/// and the invitations sent TO it. Sessions go too, so nothing keyed by the id outlives it either.
+///
+/// Invitations are rewritten rather than deleted for the same reason the account row is: who
+/// invited whom, and who accepted, is the access history. A pending one is revoked on the way,
+/// because it is a bearer token naming an address the vault has now forgotten.
+fn forget_address(conn: &rusqlite::Connection, who: (&str, &str)) -> Result<()> {
+    let (account_id, email) = who;
+    let run = |sql: &str, args: &[&dyn rusqlite::ToSql]| {
+        conn.execute(sql, args)
+            .map(|_| ())
+            .map_err(|e| Error::Internal(e.into()))
+    };
+    run("DELETE FROM sessions WHERE account_id=?1", &[&account_id])?;
+    run("DELETE FROM otp_codes WHERE email=?1", &[&email])?;
+    run("DELETE FROM escrow WHERE email=?1", &[&email])?;
+    run("DELETE FROM attempts WHERE subject=?1", &[&email])?;
+    run(
+        "UPDATE invites
+            SET email=?2,
+                status=CASE status WHEN 'pending' THEN 'revoked' ELSE status END
+          WHERE email=?1",
+        &[&email, &format!("erased:{account_id}")],
+    )
 }
 
 /// Refuse removing the organization's only owner.
