@@ -37,6 +37,12 @@ impl Store {
     /// Closed windows in `bucket` are deleted on the way in. They held nothing a later attempt
     /// reads, yet they were kept forever: every address ever typed at the login form stayed in the
     /// database, an erased account's included, recreated by the first probe after the erase.
+    ///
+    /// Ponytail: forgetting is on write, not at expiry — a closed window survives until the next
+    /// attempt in the same bucket, so an idle bucket keeps its rows for as long as it stays idle.
+    /// A backlog goes in one transaction on the pool's only connection: a million rows took
+    /// 0.64 s + 4.19 s commit (sqlite3 3.45, WAL, laptop). Delete in batches if a bucket ever
+    /// holds that many; a timer-driven sweep if retention must be bounded in time.
     pub async fn record_attempt(
         &self,
         bucket: &'static str,
@@ -89,9 +95,10 @@ mod tests {
 
     const HOUR: i64 = 3600;
 
-    /// A closed window holds nothing a later attempt reads, so it goes on the next write in its
-    /// bucket: an address somebody once typed — an erased account's included — is kept for the
-    /// hour it can matter, not forever. Another bucket's rows are left to that bucket's window.
+    /// A closed window holds nothing a later attempt reads, so it goes on the next attempt in its
+    /// bucket: an address somebody once typed — an erased account's included — is no longer kept
+    /// forever, though an idle bucket keeps it until that next attempt. Another bucket's rows are
+    /// left to that bucket's own traffic.
     #[tokio::test]
     async fn a_closed_window_is_forgotten_on_the_next_attempt() {
         let store = crate::e2e::fresh_app("attempts-forget", None).store.clone();
