@@ -358,6 +358,14 @@ ALTER TABLE grants_admitting_groups RENAME TO grants;
 CREATE INDEX IF NOT EXISTS grants_project ON grants(project_id);
 ";
 
+/// Closed throttle windows are deleted on every attempt (`store/attempts.rs`). Without this index
+/// that delete scans the whole bucket — 7–11 ms at 100,000 rows (sqlite3 3.45, `.timer on`) — on
+/// the path whose throttled answer must stay cheaper than the Argon2 it protects. With it the
+/// delete is a range seek, under the timer's millisecond resolution at the same size.
+const M10: &str = "
+CREATE INDEX IF NOT EXISTS attempts_window ON attempts(bucket, window_start);
+";
+
 /// The ledger of what has been applied.
 const LEDGER: &str = "
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -402,6 +410,7 @@ const MIGRATIONS: &[Migration] = &[
         sql: M9,
         rebuilds_a_parent: true,
     },
+    step(10, "attempts_window", M10),
 ];
 
 /// Apply every migration not yet recorded, in version order.

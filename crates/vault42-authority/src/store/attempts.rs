@@ -33,6 +33,16 @@ impl Store {
     /// paces themselves to the window boundary gains a factor of two, and a sliding window costs
     /// a row per attempt to compute. Two is not the difference between safe and unsafe here; a
     /// table that grows with an attacker's patience would be.
+    ///
+    /// Closed windows in `bucket` are deleted on the way in. They held nothing a later attempt
+    /// reads, yet they were kept forever: every address ever typed at the login form stayed in the
+    /// database, an erased account's included, recreated by the first probe after the erase.
+    ///
+    /// Ponytail: forgetting is on write, not at expiry — a closed window survives until the next
+    /// attempt in the same bucket, so an idle bucket keeps its rows for as long as it stays idle.
+    /// A backlog goes in one transaction on the pool's only connection: a million rows took
+    /// 0.64 s + 4.19 s commit (sqlite3 3.45, WAL, laptop). Delete in batches if a bucket ever
+    /// holds that many; a timer-driven sweep if retention must be bounded in time.
     pub async fn record_attempt(
         &self,
         bucket: &'static str,
@@ -44,27 +54,19 @@ impl Store {
             let tx = conn
                 .transaction()
                 .map_err(|e| crate::error::Error::Internal(e.into()))?;
-            let fresh: Option<(i64, i64)> = tx
-                .query_row(
-                    "SELECT count, window_start FROM attempts WHERE bucket=?1 AND subject=?2",
-                    params![bucket, subject],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .ok();
-            let count = match fresh {
-                Some((count, started)) if now - started < window_secs => count + 1,
-                _ => 1,
-            };
-            let started = match fresh {
-                Some((_, started)) if now - started < window_secs => started,
-                _ => now,
-            };
             tx.execute(
-                "INSERT INTO attempts(bucket, subject, count, window_start) VALUES(?1,?2,?3,?4) \
-                 ON CONFLICT(bucket, subject) DO UPDATE SET count=?3, window_start=?4",
-                params![bucket, subject, count, started],
+                "DELETE FROM attempts WHERE bucket=?1 AND window_start <= ?2",
+                params![bucket, now - window_secs],
             )
             .map_err(|e| crate::error::Error::Internal(e.into()))?;
+            let count = tx
+                .query_row(
+                    "INSERT INTO attempts(bucket, subject, count, window_start) VALUES(?1,?2,1,?3) \
+                     ON CONFLICT(bucket, subject) DO UPDATE SET count=count+1 RETURNING count",
+                    params![bucket, subject, now],
+                    |r| r.get(0),
+                )
+                .map_err(|e| crate::error::Error::Internal(e.into()))?;
             tx.commit()
                 .map_err(|e| crate::error::Error::Internal(e.into()))?;
             Ok(count)
@@ -84,5 +86,86 @@ impl Store {
             Ok(())
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::error::Error;
+
+    const HOUR: i64 = 3600;
+
+    /// A closed window holds nothing a later attempt reads, so it goes on the next attempt in its
+    /// bucket: an address somebody once typed — an erased account's included — is no longer kept
+    /// forever, though an idle bucket keeps it until that next attempt. Another bucket's rows are
+    /// left to that bucket's own traffic.
+    #[tokio::test]
+    async fn a_closed_window_is_forgotten_on_the_next_attempt() {
+        let store = crate::e2e::fresh_app("attempts-forget", None).store.clone();
+        let record =
+            |subject: &str, bucket, at| store.record_attempt(bucket, subject.to_string(), at, HOUR);
+        record("closed@example.test", "login", 1_000).await.unwrap();
+        record("other-bucket@example.test", "code", 1_000)
+            .await
+            .unwrap();
+        record("open@example.test", "login", 1_000 + HOUR - 1)
+            .await
+            .unwrap();
+        record("next@example.test", "login", 1_000 + HOUR)
+            .await
+            .unwrap();
+        let left = store
+            .call(|conn| {
+                let mut stmt = conn
+                    .prepare("SELECT subject FROM attempts ORDER BY subject")
+                    .map_err(|e| Error::Internal(e.into()))?;
+                let rows = stmt
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .map_err(|e| Error::Internal(e.into()))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|e| Error::Internal(e.into()))
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            left,
+            [
+                "next@example.test",
+                "open@example.test",
+                "other-bucket@example.test"
+            ]
+        );
+    }
+
+    /// Forgetting closed windows does not reset a live one: the count still climbs inside it.
+    #[tokio::test]
+    async fn an_open_window_keeps_counting() {
+        let store = crate::e2e::fresh_app("attempts-count", None).store.clone();
+        for (at, want) in [(1_000, 1), (1_000 + HOUR - 1, 2), (1_000 + HOUR, 1)] {
+            let count = store
+                .record_attempt("login", "me@example.test".to_string(), at, HOUR)
+                .await
+                .unwrap();
+            assert_eq!(count, want, "at {at}");
+        }
+    }
+
+    /// The forgetting delete runs on every attempt, so it must seek the window index (migration
+    /// 10) rather than scan the bucket — a scan is the amplifier the index exists to remove.
+    #[tokio::test]
+    async fn forgetting_seeks_the_window_index() {
+        let store = crate::e2e::fresh_app("attempts-plan", None).store.clone();
+        let plan = store
+            .call(|conn| {
+                conn.query_row(
+                    "EXPLAIN QUERY PLAN DELETE FROM attempts WHERE bucket='login' AND window_start <= 0",
+                    [],
+                    |r| r.get::<_, String>(3),
+                )
+                .map_err(|e| Error::Internal(e.into()))
+            })
+            .await
+            .unwrap();
+        assert!(plan.contains("attempts_window"), "plan: {plan}");
     }
 }
