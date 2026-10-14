@@ -31,7 +31,7 @@ pub(super) const SWEEP_BATCH: i64 = 100;
 
 /// Delete up to `?3` closed windows (`window_start <= ?2`) of bucket `?1`, oldest first.
 const SWEEP: &str = "DELETE FROM attempts WHERE rowid IN (SELECT rowid FROM attempts \
-                     WHERE bucket=?1 AND window_start <= ?2 LIMIT ?3)";
+                     WHERE bucket=?1 AND window_start <= ?2 ORDER BY window_start LIMIT ?3)";
 
 impl Store {
     /// Record one attempt in `bucket` for `subject` and return the running count.
