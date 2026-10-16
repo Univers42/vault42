@@ -125,6 +125,35 @@ jobs:
             echo "IMAGE_LABEL=${label}"
           } >> "$GITHUB_ENV"
 
+      # WHY THIS EXISTS. On 2026-10-14 the "stage the authority's secrets" step below went red,
+      # and two unrelated faults produce exactly that red: a PARTIAL set of the three
+      # second-factor secrets, which that step exits 1 on by design, and a FLY_API_TOKEN that Fly
+      # rejects, which makes the `secrets import` at the end of it fail. Both land on one step, so
+      # the reader had to re-derive which one it was.
+      #
+      # So the token is proven before any secret is staged and before anything is deployed:
+      # `auth whoami` is the cheapest call that proves the token still authenticates, and it
+      # prints the account it belongs to, which is worth having in the log anyway — a token for
+      # the wrong org otherwise surfaces much later as a permission error on deploy. Neither
+      # failure mode can be fixed from this repository; both need a secret rotated by somebody
+      # with access to it.
+      - name: FLY_API_TOKEN must authenticate
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "${FLY_API_TOKEN:-}" ]; then
+            echo "::error::FLY_API_TOKEN is unset. Add a Fly.io API token under"
+            echo "::error::Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          if ! docker run --rm -e FLY_API_TOKEN "$FLYCTL" auth whoami; then
+            echo "::error::FLY_API_TOKEN is rejected by Fly.io: expired, revoked, or scoped to"
+            echo "::error::another organisation. Rotate it and re-run — nothing in this repository"
+            echo "::error::can change this result."
+            exit 1
+          fi
+
       # The authority's own secrets, staged from this repository's before the release that
       # applies them. Without this the deploy is NOT reproducible: an app recreated from
       # scratch comes up with no mail transport and no invite gate, reports itself perfectly

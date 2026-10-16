@@ -54,6 +54,52 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
+      # WHY THIS EXISTS. On 2026-10-13 and again on 2026-10-14 this workflow went red at the
+      # step below with the login action's generic "login failed" text, and nothing in the tree
+      # explained it: deploy/Dockerfile and this file were byte-identical to the revision that
+      # last published successfully on 2026-09-14. The cause was DOCK_PAT itself, and it took a
+      # bisect through five weeks of history to establish that. An expired access token is the
+      # single most common way this workflow fails and it is invisible in the diff.
+      #
+      # So the token is probed BEFORE login-action runs, because the three states a red login can
+      # mean — unset, rejected, or the registry unreachable — produce the same message and call
+      # for different fixes. This names which one it is. It cannot and does not fix the token:
+      # only somebody with write access can rotate it.
+      #
+      # The probe is a plain curl against the Docker Hub token endpoint rather than a
+      # `docker login`, so it tests the credential without writing a docker config.json the job
+      # would then have to trust. Only the HTTP status is inspected; the response body is
+      # discarded rather than logged, because on some failures that body echoes the token.
+      - name: DOCK_PAT must authenticate as dlesieur
+        env:
+          DOCK_PAT: ${{ secrets.DOCK_PAT }}
+        run: |
+          set -eu
+          if [ -z "${DOCK_PAT:-}" ]; then
+            echo "::error::DOCK_PAT is unset. Add a Docker Hub access token for the dlesieur"
+            echo "::error::account under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            --user "dlesieur:${DOCK_PAT}" \
+            'https://auth.docker.io/token?service=registry.docker.io&scope=repository:dlesieur/vault42:pull' \
+            || echo 000)
+          case "$code" in
+            200) printf 'DOCK_PAT authenticates against docker.io\n' ;;
+            401|403)
+              echo "::error::DOCK_PAT is rejected by Docker Hub (HTTP $code). The token is expired,"
+              echo "::error::revoked, or lacks read access to dlesieur/vault42. Rotate it, then"
+              echo "::error::re-run this workflow — no code change will clear this."
+              exit 1 ;;
+            000)
+              echo "::error::could not reach auth.docker.io from this runner (network or proxy)."
+              echo "::error::This is not a credential problem; re-run before rotating anything."
+              exit 1 ;;
+            *)
+              echo "::error::unexpected HTTP $code from auth.docker.io"
+              exit 1 ;;
+          esac
+
       - name: Log in to Docker Hub
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -129,6 +175,37 @@ jobs:
           docker buildx imagetools inspect "${IMAGE}:${first}"
           digest=$(docker buildx imagetools inspect "${IMAGE}:${first}" --format '{{json .Manifest.Digest}}' | tr -d '"')
           echo "digest=$digest" >> "$GITHUB_ENV"
+
+      # imagetools create reads the digests from the registry, so it already fails if an arch
+      # never landed — but it is the runner's own authenticated view of a manifest it just wrote,
+      # and both the smoke test below and `fly deploy` pull anonymously. A manifest that only
+      # resolves for the account that pushed it is published-but-unusable, and nothing here would
+      # have said so. This is the only step that checks the image is pullable by someone who
+      # cannot write to it, which is exactly how a deploy consumes it.
+      #
+      # The architecture list is read back off the manifest rather than asserted from the matrix,
+      # so a matrix that grows a platform without this list updated still gets checked.
+      - name: The published manifest is readable without the push credential
+        env:
+          # Through env rather than interpolated into the script: a `${{ }}` expression is
+          # substituted before the shell ever sees it, so anything an attacker can put in a tag
+          # name becomes shell source. The neighbouring manifest step predates that rule and is
+          # left alone rather than half-migrated here.
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: |
+          set -eu
+          first=$(echo "$TAGS" | cut -d' ' -f1)
+          have=$(docker buildx imagetools inspect "${IMAGE}:${first}" \
+            --format '{{range .Manifest.Manifests}}{{.Platform.Architecture}}{{"\n"}}{{end}}' | sort -u)
+          printf 'manifest %s:%s carries architectures:\n%s\n' "${IMAGE#docker.io/}" "$first" "$have"
+          for want in amd64 arm64; do
+            if ! printf '%s\n' "$have" | grep -qx "$want"; then
+              echo "::error::${IMAGE}:${first} has no ${want} manifest — a published multi-arch"
+              echo "::error::tag missing an architecture is worse than no tag, because a deploy"
+              echo "::error::that requests it fails at pull time instead of here."
+              exit 1
+            fi
+          done
 
       - name: Install cosign
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
