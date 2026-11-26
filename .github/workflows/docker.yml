@@ -98,7 +98,9 @@ jobs:
 
       - name: Record why nothing was published
         if: env.PUBLISH != 'true'
-        run: echo "Branch push: built ${{ matrix.platform }}, published nothing. DOCK_PAT is used only for tag releases and manual runs." >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "Branch push: built ${{ matrix.platform }}, published nothing. \
+          DOCK_PAT is used only for tag releases and manual runs." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Export digest
         if: env.PUBLISH == 'true'
