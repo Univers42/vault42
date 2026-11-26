@@ -7,11 +7,15 @@
 # by buildx.
 #
 # Tags:  push of vX.Y.Z  → :vX.Y.Z + :latest
-#        push to main    → :edge + :sha-<7>
+#        push to main    → build-only: the same multi-arch image compiles but is not pushed,
+#                          so a branch commit is still proven buildable without a Docker Hub
+#                          credential, and a stale token cannot redden every push to main
 #        workflow_dispatch → as for the ref it runs on
 #
 # Credentials: the repository secret DOCK_PAT (a Docker Hub access token for the
-# `dlesieur` account); the username is not a secret. Actions pinned by commit SHA.
+# `dlesieur` account); the username is not a secret. Only a publishing run logs in — so
+# a release (tag or manual dispatch) fails loudly when the token is missing or revoked,
+# while an ordinary branch push never depends on it. Actions pinned by commit SHA.
 name: docker
 
 on:
@@ -31,6 +35,9 @@ concurrency:
 
 env:
   IMAGE: docker.io/dlesieur/vault42
+  # Tag releases and manual runs publish; a branch push only builds. Kept here so every
+  # step below asks one question instead of three separate ref checks.
+  PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
 
 jobs:
   build:
@@ -55,12 +62,14 @@ jobs:
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Docker Hub
+        if: env.PUBLISH == 'true'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: dlesieur
           password: ${{ secrets.DOCK_PAT }}
 
       - name: Build and push by digest
+        if: env.PUBLISH == 'true'
         id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -73,7 +82,26 @@ jobs:
           provenance: true
           sbom: true
 
+      # The no-credential path: same Dockerfile, same platform, nothing pushed. It exists
+      # because `main` used to go red on every commit whenever DOCK_PAT expired, which
+      # says nothing about the tree and trains people to ignore a red workflow.
+      - name: Build without publishing
+        if: env.PUBLISH != 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: false
+          cache-from: type=gha,scope=vault42-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=vault42-${{ matrix.arch }}
+
+      - name: Record why nothing was published
+        if: env.PUBLISH != 'true'
+        run: echo "Branch push: built ${{ matrix.platform }}, published nothing. DOCK_PAT is used only for tag releases and manual runs." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Export digest
+        if: env.PUBLISH == 'true'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
@@ -81,6 +109,7 @@ jobs:
           touch "/tmp/digests/${DIGEST#sha256:}"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: env.PUBLISH == 'true'
         with:
           name: digests-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -90,6 +119,8 @@ jobs:
   merge:
     name: manifest + tags + sign
     needs: build
+    # Nothing to merge when the build job did not push: the digest artifacts do not exist.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

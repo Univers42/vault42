@@ -10,7 +10,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY . .
-RUN cargo build --release --bin vault42-server \
+RUN cargo build --locked --release --bin vault42-server \
  && cp target/release/vault42-server /vault42-server
 
 # distroless/cc carries glibc + CA roots (for the optional grobase TLS hop) and no shell.
