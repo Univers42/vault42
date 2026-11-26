@@ -16,15 +16,15 @@
 
 use crate::config::SshConfig;
 use crate::factory::EdgeFactory;
+use russh::keys::{Algorithm, PrivateKey};
 use russh::server::{Config, Server as _};
-use russh::MethodSet;
-use russh_keys::key::KeyPair;
+use russh::{MethodKind, MethodSet};
 use std::sync::Arc;
 
 /// Run the SSH edge until terminated.
 pub async fn run(cfg: SshConfig) -> anyhow::Result<()> {
     let config = Config {
-        methods: MethodSet::PUBLICKEY,
+        methods: MethodSet::from(&[MethodKind::PublicKey][..]),
         keys: vec![host_key()?],
         ..Default::default()
     };
@@ -38,11 +38,10 @@ pub async fn run(cfg: SshConfig) -> anyhow::Result<()> {
 }
 
 /// Load the Ed25519 host key from `VAULT42_SSH_HOST_KEY`, or generate an ephemeral one.
-fn host_key() -> anyhow::Result<KeyPair> {
+fn host_key() -> anyhow::Result<PrivateKey> {
     match std::env::var("VAULT42_SSH_HOST_KEY") {
-        Ok(path) => Ok(russh_keys::load_secret_key(path, None)?),
-        Err(_) => {
-            KeyPair::generate_ed25519().ok_or_else(|| anyhow::anyhow!("host key generation failed"))
-        }
+        Ok(path) => Ok(russh::keys::load_secret_key(path, None)?),
+        Err(_) => PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
+            .map_err(|e| anyhow::anyhow!("host key generation failed: {e}")),
     }
 }

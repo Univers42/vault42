@@ -14,7 +14,7 @@
 //! gets its own `Edge` carrying a shared reference to the authorized-key allowlist; the
 //! handler logic (auth + jailed session) lives in `handler`.
 
-use russh_keys::key::PublicKey;
+use russh::keys::PublicKey;
 use std::sync::Arc;
 
 /// Builds one `Edge` handler per incoming connection.

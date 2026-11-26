@@ -16,8 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 russh.workspace = true
-russh-keys.workspace = true
-async-trait.workspace = true
+rand.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

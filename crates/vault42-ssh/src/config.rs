@@ -15,7 +15,7 @@
 //! only thing that grants transport; there is no password auth. No private key or
 //! secret material is configured here — the edge never decrypts anything.
 
-use russh_keys::key::PublicKey;
+use russh::keys::PublicKey;
 
 /// The resolved SSH edge configuration.
 pub struct SshConfig {
@@ -52,5 +52,6 @@ fn load_authorized() -> anyhow::Result<Vec<PublicKey>> {
 /// Parse one OpenSSH public key line (`ssh-ed25519 AAAA... comment`) into a key.
 fn parse_key(line: &str) -> anyhow::Result<PublicKey> {
     let b64 = line.split_whitespace().nth(1).unwrap_or(line);
-    russh_keys::parse_public_key_base64(b64).map_err(|e| anyhow::anyhow!("bad authorized key: {e}"))
+    russh::keys::parse_public_key_base64(b64)
+        .map_err(|e| anyhow::anyhow!("bad authorized key: {e}"))
 }

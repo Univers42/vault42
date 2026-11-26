@@ -70,9 +70,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # HTTP server for the contract authority (the nano grobase peer)
 axum = "0.7"
 # storage substrate (P5) — embedded SQLite, statically bundled (scratch-image safe)
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.42", features = ["bundled"] }
 r2d2 = "0.8"
-r2d2_sqlite = "0.25"
+r2d2_sqlite = "0.37"
 # observability (P5) — structured logs; never carries plaintext (kernel rule 7)
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
@@ -87,9 +87,16 @@ blake3 = "1"
 # shared encodings (P5/P6)
 base64 = "0.22"
 uuid = { version = "1", features = ["v4", "v5"] }
-# SSH edge (P8) — hardened transport; auth only, no server-side plaintext
-russh = "0.45"
-russh-keys = "0.45"
+# SSH edge (P8) — hardened transport; auth only, no server-side plaintext.
+# russh >= 0.50 absorbed the former russh-keys crate: keys are re-exported at
+# `russh::keys`, so the old `russh-keys` dependency must not come back.
+# ring, not the default aws-lc-rs: the edge already links ring through rustls, and
+# aws-lc-sys needs cmake at build time. No `rsa` feature — host and user keys are
+# Ed25519-only, so the RSA code path (and its advisory surface) stays out entirely.
+# No `flate2` either: the edge never negotiates compression for an auth-only banner.
+russh = { version = "0.65", default-features = false, features = ["ring"] }
+# Host-key generation uses the same RNG crate russh builds against.
+rand = { version = "0.10", features = ["thread_rng"] }
 async-trait = "0.1"
 
 # Strip + thin-LTO the release binaries (mirrors the grobase data-plane profile).
