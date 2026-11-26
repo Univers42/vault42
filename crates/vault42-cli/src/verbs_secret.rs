@@ -6,74 +6,75 @@
 /*   By: dlesieur <dev.pro.photo@gmail.com>                +#+  +:+       +#+ */
 /*                                                          +#+#+#+#+#+   +#+ */
 /*   Created: 2026/06/19 00:00:00 by dlesieur                      #+#    #+# */
-/*   Updated: 2026/06/19 00:00:00 by dlesieur               ###   ########.fr */
+/*   Updated: 2026/11/25 00:00:00 by dlesieur               ###   ########.fr */
 /*                                                                            */
 /* ************************************************************************** */
 
 //! `set` and `get`. `set` seals the plaintext locally for the caller and pushes the
-//! opaque envelope with optimistic concurrency (expected_prev = current head). `get`
-//! fetches the envelope and decrypts it locally — the server sees neither plaintext
-//! nor a DEK at any point.
+//! opaque envelope with optimistic concurrency (expected_prev = current head). `get` fetches
+//! the envelope and decrypts it locally — the server sees neither plaintext nor a DEK.
+//!
+//! Seal happens under an opaque handle, and the name is written to the sealed index
+//! ([`crate::handles`]), so the server cannot read what the secret is called either. A name
+//! stored by an older client is still readable once, with a note that it is still visible.
 
 use crate::client::Session;
-use crate::{compose, decrypt, derive};
-use tonic::{Code, Request};
-use vault42_proto::vault::v1::{GetRequest, PushRequest};
+use crate::compose;
+use crate::handles::{self, is_secret_handle};
+use tonic::Request;
+use vault42_proto::vault::v1::PushRequest;
 use zeroize::Zeroizing;
 
 impl Session {
-    /// Seal `plaintext` for this identity and push it at the next version.
+    /// Seal `plaintext` for this identity and push it at the next version of `path`'s handle.
     pub async fn cmd_set(
         &mut self,
         path: &str,
         plaintext: Zeroizing<Vec<u8>>,
     ) -> anyhow::Result<()> {
-        let current = self.current_version(path).await?;
+        let wire = self.wire_path(path);
+        let current = self.head_version(&wire).await?;
         let envelope = compose::self_envelope(
             &self.identity,
             &self.principal,
-            path,
+            &wire,
             current + 1,
             plaintext.as_slice(),
         )?;
         let mut request = Request::new(PushRequest {
-            path: path.to_string(),
+            path: wire.clone(),
             envelope,
             expected_prev_rev: current,
         });
         self.authorize(&mut request, "/vault.v1.Vault/Push")?;
         let version = self.client.push(request).await?.into_inner().version;
+        self.record_revision(&wire, version);
+        self.remember(&wire, path, version).await;
         println!("pushed {path} version {version}");
         Ok(())
     }
 
     /// Fetch and locally decrypt a secret version (`0` ⇒ latest) to stdout.
     pub async fn cmd_get(&mut self, path: &str, version: u64) -> anyhow::Result<()> {
-        let expected = derive::secret_id(&self.principal, path);
-        let mut request = Request::new(GetRequest {
-            path: path.to_string(),
-            version,
-        });
-        self.authorize(&mut request, "/vault.v1.Vault/Get")?;
-        let resp = self.client.get(request).await?.into_inner();
-        let plaintext = decrypt::open_envelope(&self.identity, &resp, &expected, version)?;
+        let wire = self.wire_path(path);
+        let plaintext = match self.fetch_open(&wire, version).await {
+            Ok(plaintext) => plaintext,
+            Err(error)
+                if is_secret_handle(&wire) && version == 0 && handles::is_not_found(&error) =>
+            {
+                let plaintext = self.fetch_open(path, 0).await?;
+                eprintln!(
+                    "note: {path} was stored by an older client under its plaintext name, which \
+                     the server can see. Re-run `vault42 set {path}` to move it to an opaque \
+                     handle."
+                );
+                plaintext
+            }
+            Err(error) => return Err(error),
+        };
         use std::io::Write;
         std::io::stdout().write_all(&plaintext)?;
         Ok(())
-    }
-
-    /// The current head version for `path`, or 0 if the secret does not exist yet.
-    async fn current_version(&mut self, path: &str) -> anyhow::Result<u64> {
-        let mut request = Request::new(GetRequest {
-            path: path.to_string(),
-            version: 0,
-        });
-        self.authorize(&mut request, "/vault.v1.Vault/Get")?;
-        match self.client.get(request).await {
-            Ok(resp) => Ok(resp.into_inner().version),
-            Err(status) if status.code() == Code::NotFound => Ok(0),
-            Err(status) => Err(status.into()),
-        }
     }
 
     /// Fetch and locally decrypt the caller's own copy of `path` (shared with `share`).
@@ -81,37 +82,37 @@ impl Session {
         &mut self,
         path: &str,
     ) -> anyhow::Result<Zeroizing<Vec<u8>>> {
-        let expected = derive::secret_id(&self.principal, path);
-        let mut request = Request::new(GetRequest {
-            path: path.to_string(),
-            version: 0,
-        });
-        self.authorize(&mut request, "/vault.v1.Vault/Get")?;
-        let resp = self.client.get(request).await?.into_inner();
-        decrypt::open_envelope(&self.identity, &resp, &expected, 0)
+        let wire = self.wire_path(path);
+        self.fetch_open(&wire, 0).await
     }
 
     /// Re-seal the secret at `path` under a fresh DEK and push it at the next version.
     pub async fn cmd_rotate(&mut self, path: &str) -> anyhow::Result<()> {
-        let current = self.current_version(path).await?;
+        let wire = self.wire_path(path);
+        let current = self.head_version(&wire).await?;
         if current == 0 {
-            anyhow::bail!("no secret at {path} to rotate");
+            anyhow::bail!(
+                "no secret at {path} to rotate — if it was written by an older client under its \
+                 plaintext name, re-run `vault42 set {path}` first"
+            );
         }
         let plaintext = self.fetch_plaintext(path).await?;
         let envelope = compose::self_envelope(
             &self.identity,
             &self.principal,
-            path,
+            &wire,
             current + 1,
             plaintext.as_slice(),
         )?;
         let mut request = Request::new(PushRequest {
-            path: path.to_string(),
+            path: wire.clone(),
             envelope,
             expected_prev_rev: current,
         });
         self.authorize(&mut request, "/vault.v1.Vault/Rotate")?;
         let version = self.client.rotate(request).await?.into_inner().version;
+        self.record_revision(&wire, version);
+        self.remember(&wire, path, version).await;
         println!("rotated {path} to version {version}");
         Ok(())
     }

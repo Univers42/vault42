@@ -11,7 +11,8 @@
 /* ************************************************************************** */
 
 //! vault42 — the zero-knowledge CLI (the primary surface). ALL plaintext crypto
-//! happens here, on the client; only ciphertext ever leaves the machine. `init` runs
+//! happens here, on the client; only sealed envelopes (ciphertext, wrapped keys and
+//! signed metadata) ever leave the machine. `init` runs
 //! offline; every other verb unlocks the local keystore, opens a signed gRPC session,
 //! and dispatches. Plaintext is read into a `Zeroizing` buffer and never logged.
 
@@ -22,8 +23,10 @@ mod compose;
 mod contract_io;
 mod decrypt;
 mod derive;
+mod handles;
 mod keystore_io;
 mod passphrase;
+mod pins;
 mod verbs_audit;
 mod verbs_init;
 mod verbs_manage;

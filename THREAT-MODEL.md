@@ -29,11 +29,45 @@ can read another's data.
   `vault42-cli/src/compose.rs:32`) and every one passes `recovery: None`, so no envelope in existence
   carries a recovery wrap. D5 is unreachable rather than merely unwired (see RUNBOOK).
 - **R2 Metadata is not encrypted** — counts, sharing graph, blob sizes, timing are visible to the
-  server. v1 accepted; `content_type` is an opaque label, never a key name. v2 may encrypt names.
+  server. v1 accepted; `content_type` is an opaque label, never a key name. **Names are no longer on
+  this list.** A write addresses an opaque handle — `__42ctl/s/<uuidv5 of principal:path>` for a
+  personal secret, `__42ctl/e/<uuidv5 of scope:path>` for an environment secret, and
+  `shared/<sharer>/<uuid>` for a share (`42ctl/src/core/nameindex.rs`, `vault42-cli/src/handles.rs`) —
+  and the label the user typed lives in a sealed index at `__42ctl/s/index`, pushed as an ordinary
+  envelope. The handle is derived, so `get` needs nothing but the name; the index exists for `ls`.
+  This is observed end to end, not argued: gate `v31-opaque-names` runs the real client against the
+  real server, writes `prod/stripe`, and greps the server's database for it — the name is absent and
+  an opaque handle is present, and the gate was watched failing against a client patched to write the
+  plaintext path. Two residuals, both stated: a row written by a *previous* client still carries its
+  plaintext name until it is written again (reads still work and say so), and the sealed index
+  reveals the *number* of labelled secrets through its size. Inside the envelope, `relative_path`
+  stays empty on the wire, so a leaf's path is not in the stored bytes either.
 - **R3 Server is trusted for availability/ordering** — it can DoS or serve a stale rev, but cannot
   read. Mitigate: `rev` in the AAD + expected-prev-rev optimistic concurrency, enforced server-side
-  (`ops_env.rs:109`) and regression-tested (`stale_expected_prev_rev_is_rejected`); the client treats
-  a missing/old rev as an error, not silent success. **Status:** audit-chain omission detection is
+  (`ops_env.rs:109`) and regression-tested (`stale_expected_prev_rev_is_rejected`). A read that names
+  a revision — an explicit `get --version`, or a manifest entry's recorded `rev` — passes it as
+  `ReadScope::min_rev`, and every fetched response's transport `version` must equal the revision
+  signed inside the envelope (`vault42-core::open_at_version`; 42ctl makes the same check in
+  `adapters/decrypt.rs` against its pinned core revision), so an older envelope cannot be served
+  under that revision. A bare **latest** read names no revision, so it had nothing to compare
+  against — and that was the residual. Both clients now keep the missing state: a pin book
+  (`42ctl/src/ops/pins.rs`, `vault42-cli/src/pins.rs`) recording the highest revision accepted per
+  handle, beside the keystore, refused when the server answers lower. Writes are covered too, since
+  a rewound head would otherwise let a client append an old revision over a newer one; the head
+  lookup runs the same floor. `rm` records a one-use release, because a delete removes the rows and
+  the next write legitimately restarts at 1 — without it every delete-then-recreate would read as an
+  attack. `FT_ACCEPT_ROLLBACK=1` (`VAULT42_ACCEPT_ROLLBACK` in the other client) accepts a restore,
+  says so on stderr, and lowers the pin; a restore is a legitimate rollback no client can tell from
+  an attack, so it is deliberate rather than silent. What remains, stated exactly: the first read of
+  a handle on a machine has nothing to compare against, a `get --version N` is asking for history and
+  is allowed to be old, and right after a local `rm` one lower revision is accepted for that handle
+  before the pin rebuilds. A delete performed on ANOTHER machine is indistinguishable from a rollback
+  here — the pin has no way to know the row is gone deliberately — so it is refused, the refusal names
+  both causes, and the override is how you accept it. That direction is chosen on purpose: a stale
+  read is silent, and this is not. None of those let a server rewrite a secret this machine has already
+  read. Held end to end by `v32-rollback-pin`, which restores an older database under a real client
+  and watches it refuse.
+  **Status:** audit-chain omission detection is
   **not implemented**. The chain is written correctly — each append re-reads the head and links
   `prev_hash`→`hash` under a single connection (`vault42-server/src/audit_store.rs:104-151`) — but
   nothing verifies it. Both audit clients print `seq`, `ts`, `action`, `target` and a hash prefix,
@@ -60,14 +94,25 @@ can read another's data.
   it (`open.rs:77-91`); the only version branch in the tree is `contract.rs:79`, which rejects rather
   than migrates. Cross-era confusion is prevented by the AAD domain tag (`vault42/aad/v2`), not by
   the field — which is sound, but it is a different mechanism than the one claimed, and it offers no
-  migration path. Unit tests pin roundtrip/tamper/injectivity/dedup; a `cargo-fuzz` target over the
-  decoder and golden vectors remain a P2 follow-up (no `fuzz/` directory exists yet).
-- **R9 Author-pubkey trust (TOFU)** — `open` pins the author key the caller passes and `verify_strict`
-  proves authorship against *that* key, but the *expected* key still comes from the (untrusted) server
-  on first fetch. This is trust-on-first-use: a server that lies about the owner key on the initial
-  fetch defeats the pin. Mitigate: pin the owner pubkey in the tenant's grobase identity record
-  (owner-scoped, CMEK at rest) and surface any owner-key change in the audit chain — but the initial
-  key-distribution problem is **not** fully solved; an out-of-band anchor is the real fix (future work).
+  migration path. Unit tests pin roundtrip/tamper/injectivity/dedup, and the decoder's behaviour on
+  bytes nobody chose is asserted as a property rather than promised as future work:
+  `any_bytes_are_rejected_or_round_trip_but_never_panic` feeds it up to 8 KiB of arbitrary input and
+  requires either a rejection or an envelope that re-encodes and decodes again — a panic fails it.
+  What is still absent is a coverage-GUIDED campaign: a `cargo-fuzz` target would explore structure
+  the random buffers rarely reach, and that remains a P2 follow-up rather than a claim.
+- **R9 Author-pubkey trust** — `open` proves authorship against the key it is handed, so the
+  question was always where that key comes from. For a secret in this identity's OWN namespace the
+  answer is now local and needs no trust on first use: both clients require the fetched author key to
+  be *this identity's* own key and refuse anything else before decrypting, in the same place they
+  apply the revision pin (`pins.rs`; 42ctl calls `decrypt::require_own_author`). Only this identity
+  writes its namespace, so an envelope authored by anybody else is a substitution whatever it
+  verifies. A secret SHARED to this identity is somebody else's by construction, so there the author
+  is pinned on first read and a change is refused with `FT_ACCEPT_NEW_AUTHOR`
+  (`VAULT42_ACCEPT_NEW_AUTHOR`) as the deliberate override — a re-share by another person and a
+  substitution look identical from the bytes. **Residual, and it is now one fetch wide:** the first
+  read of a shared secret still trusts the server for the sharer's key, and a changed key is caught
+  from the second read on. Closing that needs an out-of-band origin anchor for other people's keys —
+  the same problem as R15's registry, and the same future work.
 - **R10 RNG dependence (accepted)** — vault42 relies entirely on the OS CSPRNG (`getrandom`) with no
   fallback. A *broken/predictable* RNG compromises the DEK directly (plaintext recoverable) regardless
   of nonce width — the 192-bit nonce only removes *reuse* hazard from a *working* RNG, it does not
@@ -634,10 +679,43 @@ OWASP ASVS + Top 10 as the rubric. Every finding → a failing regression test �
 
 The ZK invariant is exercised by the `vault42-conformance` proptest battery
 (`crates/vault42-conformance/tests/`: roundtrip, tamper→auth-failure, non-recipient-cannot-unwrap,
-signature-forgery-rejected, and the recovery-opt-in gate). **Status:** gate
-`v02-zero-knowledge-proof` — the end-to-end check that no sentinel plaintext appears in a stored row,
-a log line, or server memory — **does not exist**. `git log --all --diff-filter=A` finds it in no
-commit on any branch, and no script in `scripts/verify/` bears that name. The property most central
-to this document is therefore argued from unit-level crypto tests rather than from an end-to-end
-observation of a running server. Writing v02 is the largest verification gap in the repo. The
-`cargo-fuzz` half of the conformance battery does not exist either (no `fuzz/` directory).
+signature-forgery-rejected, and the recovery-opt-in gate).
+
+Gate `v02-zero-knowledge-proof` now exists: `scripts/verify/v02-zero-knowledge-proof.sh` runs
+`crates/vault42-server/tests/zero_knowledge.rs`, which launches the **shipped binary** on a scratch
+database, pushes a sentinel plaintext through a real signed client (once on the per-owner secret path,
+once on the shared-environment env-secret path), and then scans (a) the database and its `-wal`/`-shm`
+sidecars, (b) everything the server printed at `RUST_LOG=trace`, and (c) the bytes it served back.
+Each absence assertion has a positive control — the owner fingerprint or scope id must be findable in
+the database, and the startup line must be in the log — so a scan of an empty buffer cannot pass.
+It is registered in `run-gate-battery.sh --fast`, and CI runs the workspace suite.
+
+Gate `v31-opaque-names` covers the other half — that the server does not learn a secret's *name*.
+`scripts/verify/v31-opaque-names.sh` builds the real `42ctl` and the real server, writes
+`prod/stripe`, reads it back, lists it, and then greps the server's database and `-wal` for the name.
+Two assertions with a control between them: the name is absent, and an opaque secret handle
+(`__42ctl/s/<uuid>`) is present, so the scan proves it read a populated store. It was watched
+failing against a client patched to write the plaintext path (`FAIL v31: the plaintext name
+'prod/stripe' is in the server database`), which is the only thing that makes the pass mean
+something. The same check runs inside 42ctl's own battery as `s31-operability` assertion 3.
+
+Gate `v32-rollback-pin` covers anti-rollback with local state — the half no stateless check can
+reach. `scripts/verify/v32-rollback-pin.sh` builds the real `42ctl` and the real server, writes the
+secret twice, snapshots the database holding revision 1, writes revision 2, then puts the snapshot
+back (a restore, in the exact form a host with an old copy produces it) and restarts the server.
+Four assertions, three of them controls: revision 2 is current before the rewind, the rewound read
+is REFUSED naming the rollback, the `FT_ACCEPT_ROLLBACK=1` restore path returns revision 1's value,
+and a plain read works again afterwards (a pin that never moves would brick the secret). It was
+watched failing with the check deleted from `fetch_open` — the client then printed the old value and
+`FAIL v32: the client accepted the restored revision 1 as current`. The same policy has unit tests
+in both clients (`a_revision_below_the_pin_is_refused`, `a_deleted_handle_may_restart_once`,
+`the_override_accepts_a_restore_and_moves_the_pin`, `pins_are_per_principal`).
+
+**Server memory is not asserted**, and the gate says so rather than implying otherwise: from outside
+the process there is no honest way to report on it, and `/proc/<pid>/mem` would be allocator junk. What
+covers memory is structural — no decrypting code path and no recipient key exist in that binary.
+
+The `cargo-fuzz` half of the conformance battery still does not exist (no `fuzz/` directory); the
+decoder's bounds are covered by proptest instead (`from_bytes_rejects_trailing_garbage`,
+`every_single_byte_flip_is_rejected`). A real `cargo-fuzz` target over `Envelope::from_bytes` remains
+a P2 follow-up.

@@ -16,7 +16,9 @@
 //! Cheap key generation per case keeps the suite fast; 64 cases is enough signal.
 
 use proptest::prelude::*;
-use vault42_core::{open, seal, Identity, Kind, Metadata, ReadScope, Recipients, DEFAULT_MODE};
+use vault42_core::{
+    open, seal, Envelope, Identity, Kind, Metadata, ReadScope, Recipients, DEFAULT_MODE,
+};
 
 fn metadata(rev: u64) -> Metadata {
     Metadata {
@@ -68,6 +70,26 @@ proptest! {
         let index = (bit as usize) % env.ciphertext.len();
         env.ciphertext[index] ^= 1 << (bit % 8);
         prop_assert!(open(&env, alice.encryption_secret(), &author.author_public(), &scope()).is_err());
+    }
+
+    /// The decoder reads bytes an untrusted server chose, so it must be safe on ANY input:
+    /// arbitrary bytes are an error, never a panic, and anything it does accept must re-encode
+    /// to something it accepts again.
+    ///
+    /// This is the property a `cargo-fuzz` campaign over `Envelope::from_bytes` hunts for. It is
+    /// a property here rather than a `fuzz/` target on purpose: a fuzz target whose discovery of
+    /// a bug is unverified is weaker than a randomized assertion that runs on every `cargo test`.
+    #[test]
+    fn any_bytes_are_rejected_or_round_trip_but_never_panic(
+        raw in proptest::collection::vec(any::<u8>(), 0..8192),
+    ) {
+        if let Ok(env) = Envelope::from_bytes(&raw) {
+            let encoded = env.to_bytes().expect("a decoded envelope re-encodes");
+            let again = Envelope::from_bytes(&encoded).expect("and decodes again");
+            prop_assert_eq!(&env.ciphertext, &again.ciphertext);
+            prop_assert_eq!(env.metadata.rev, again.metadata.rev);
+            prop_assert_eq!(&env.wrapped.len(), &again.wrapped.len());
+        }
     }
 
     #[test]

@@ -16,6 +16,11 @@ auth, ABAC, tenant isolation, a tamper-evident audit chain, and an at-rest CMEK 
 
 All plaintext crypto happens **client-side** (XChaCha20-Poly1305 over a random DEK; the DEK wrapped
 per recipient via X25519; an Ed25519 author signature over a frozen canonical AAD; Argon2id keystore).
+What the server holds is that ciphertext, the wrapped DEKs, and **unencrypted-but-authenticated
+metadata**: the owner fingerprint, its size, version and timings — under an opaque handle rather than
+the name you gave it. The name is sealed into a client-side index the server cannot read
+([THREAT-MODEL](THREAT-MODEL.md) R2). Secrets written by a client older than this still sit under
+their plaintext name until they are written again.
 
 ## Running it → [the operator's manual](docs/manual/README.md) · using it → [the 42ctl manual](https://github.com/Univers42/42ctl/tree/main/docs/manual)
 

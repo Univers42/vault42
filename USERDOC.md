@@ -368,20 +368,35 @@ the CLI at `http://127.0.0.1:<port>` (plaintext is fine on loopback).
 ## 10. Security model in one page
 
 **Guaranteed:** a full compromise of the host, the vault42 process, or its datastore yields **no
-plaintext** and **no cross-tenant access**. The server stores only opaque envelopes; isolation is by
-your key fingerprint, enforced per request.
+plaintext** and **no cross-tenant access**. The server stores opaque envelopes — plus the
+unencrypted-but-authenticated metadata that routes them (owner fingerprint, sizes, versions,
+timings) — under an opaque handle. The name you give a secret is sealed into a client-side index,
+so the stored row cannot be named by the server. Isolation is by your key fingerprint, enforced per
+request.
 
 - **Encryption:** XChaCha20-Poly1305 (random per-secret data key) → DEK wrapped per recipient via
   X25519 ECDH+HKDF → Ed25519 author signature over a frozen, length-prefixed canonical AAD.
 - **Transport:** HTTPS at the edge; each request is Ed25519-signed (binds the method + a fresh
   timestamp) so it can't be replayed onto a different operation; a valid contract is required.
 - **Integrity:** the server verifies your envelope's author signature **without decrypting** before
-  storing; reads are bound to the requested secret-id + minimum revision (anti-substitution,
-  anti-rollback); a per-owner tamper-evident audit hash-chain records every operation.
+  storing; reads are bound to the requested secret-id and to the revision you name (or the one the
+  encrypted manifest recorded), and the revision the server labels is cross-checked against the one
+  signed inside the envelope — so an older envelope cannot be substituted for that revision. A bare
+  "latest" read names no revision, so the client remembers the highest revision it accepted for each
+  secret and refuses a lower one; a delete you performed on THIS machine is the one exception, used
+  once, because the next write legitimately restarts at revision 1. (A delete performed on another
+  machine cannot be told from a rollback here, so it is refused and named — accept it with the
+  override below rather than over a silent stale read.) A deliberate restore of the server's state needs
+  `FT_ACCEPT_ROLLBACK=1` (`VAULT42_ACCEPT_ROLLBACK` for the other client), which accepts it and says
+  so on stderr. What is left: the first read of a secret on a machine has nothing to compare
+  against, and `get --version N` asks for history, which is allowed to be old. A per-owner
+  tamper-evident audit hash-chain records every operation.
 - **Guardrails:** invite-token registration (anti-squatting/DoS), per-owner secret quota.
 
-**Honestly NOT covered in this edition** (documented in `THREAT-MODEL.md`): metadata (paths, sizes,
-sharing graph) is not encrypted; there is no server-side passphrase recovery; an attacker *inside*
+**Honestly NOT covered in this edition** (documented in `THREAT-MODEL.md`): metadata (sizes, versions,
+timings, the sharing graph) is not encrypted. Secret names are: they live in a sealed index, not in
+the stored row — though rows written by an older client keep their plaintext name until they are
+written again; there is no server-side passphrase recovery; an attacker *inside*
 the server's private network could replay a captured read within the 120 s skew window (the request
 body isn't signature-bound yet); a compromised client with the keystore unlocked can read its own
 secrets.
@@ -414,5 +429,8 @@ by design (that is the zero-knowledge guarantee). Keep a backup of `keystore.v42
 **Can I run two identities?** Yes — set `VAULT42_KEYSTORE` and `VAULT42_CONTRACT` to different files
 per identity.
 
-**Is my data readable by the operator?** No. The operator holds only ciphertext and your public keys.
-That is the entire point.
+**Is my data readable by the operator?** No. The operator holds ciphertext, your public keys, and the
+unencrypted metadata that routes your secrets (sizes, versions, timings) — never a secret and, for
+anything written by this version, never its name either. A secret's name is sealed into a local
+index. The residual is stated in `THREAT-MODEL.md` R2 rather than left to be found: a row written by
+an older client keeps its plaintext name until it is written again.

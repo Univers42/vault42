@@ -77,10 +77,36 @@ declared_routes() {
 }
 
 # Every control-plane path 42ctl calls, normalised to the same shape.
+#
+# The raw scrape picks up two things that are NOT control-plane routes, and each one used to
+# fail this gate against a server that was never asked to serve it:
+#
+#   * prose. An error string such as "/v1/auth/signup failed: HTTP 400" (an assertion in
+#     cmd/auth.rs) matches the bare-literal regex, and the set difference then reports a
+#     sentence as a missing route. `keep_paths` below keeps only what could be a request
+#     target — no spaces — so a message cannot pose as an endpoint.
+#   * the Fly Machines API. adapters/flyapi.rs is the documented one-route-wide exception to
+#     "cloud verbs go through flyctl": it calls api.machines.dev/v1/apps/{app}/machines/{id}/ps,
+#     which is Fly's API, not a route this authority serves. It is excluded BY FILE, and
+#     assert_the_fly_exception_is_still_the_fly_client below fails when that file stops being
+#     the Fly client, so the exclusion cannot rot into hiding an authority route moved there.
 client_paths() {
-	grep -rhoE '"/v1/[^"]*"|format!\("[^"]*v1/[^"]*"' "$CTL/src/adapters/" "$CTL/src/cmd/" |
+	grep -rhoE '"/v1/[^"]*"|format!\("[^"]*v1/[^"]*"' \
+		--exclude=flyapi.rs "$CTL/src/adapters/" "$CTL/src/cmd/" |
 		sed 's/format!(//' | tr -d '"' | sed 's|{[a-z_]*}|probe|g' |
-		sed 's|^probe||' | sed 's/?.*$//' | sort -u
+		sed 's|^probe||' | sed 's/?.*$//' |
+		grep -E '^/[A-Za-z0-9._/-]+$' | sort -u
+}
+
+# The positive control for the exclusion in client_paths: flyapi.rs is left out of the scrape
+# because it is the Fly Machines API client, so if it is still present it must still look like
+# that. An absent file needs no exclusion and is not a failure.
+assert_the_fly_exception_is_still_the_fly_client() {
+	fly="$CTL/src/adapters/flyapi.rs"
+	[ -f "$fly" ] || return 0
+	grep -q 'api\.machines\.dev' "$fly" && grep -q 'machines/{machine}/ps' "$fly" || fail \
+		"$fly is excluded from the parity scrape as the Fly Machines API client, and it no longer "\
+"looks like one; re-read that exclusion before trusting a parity result that skipped it"
 }
 
 # The authority's declared routes in client shape, for the set difference.
@@ -166,6 +192,7 @@ assert_parity_with_the_client() {
 		return 0
 	}
 	assert_the_client_surface_was_actually_found
+	assert_the_fly_exception_is_still_the_fly_client
 	absent="$(comm -23 "$WORK/client.txt" "$WORK/declared.txt")"
 	[ -z "$absent" ] || fail "42ctl calls routes the authority does not serve: $(echo "$absent" | tr '\n' ' ')"
 	printf '  all %s control-plane paths 42ctl calls are served\n' "$(wc -l <"$WORK/client.txt" | tr -d ' ')"

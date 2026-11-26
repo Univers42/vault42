@@ -57,7 +57,7 @@ pub use keyset::{
 };
 pub use keystore::{open_keystore, seal_keystore, KeystoreBlob};
 pub use metadata::{Kind, Metadata, ReadScope, DEFAULT_MODE};
-pub use open::open;
+pub use open::{open, open_at_version};
 pub use pop::pop_message;
 pub use recipient::{RecipientKind, WrappedDek};
 pub use request::{fingerprint, sign_request, verify_request};

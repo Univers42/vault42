@@ -54,8 +54,13 @@ pub struct Metadata {
 }
 
 /// The caller's expectation for an `open`: which secret was requested and the
-/// minimum acceptable revision. `open` rejects a mismatch, so a malicious server
-/// cannot substitute a different validly-signed envelope or replay a stale rev.
+/// minimum acceptable revision. `open` rejects a mismatch, so a server cannot substitute
+/// an envelope for a different secret, and cannot pass off an older revision when the
+/// caller names one (`min_rev > 0`).
+///
+/// `min_rev: 0` is the one case with no floor to compare against — a bare "latest" read.
+/// The transport label is still checked against the envelope's signed `rev` by
+/// [`crate::open_at_version`], which is all a stateless client can verify there.
 pub struct ReadScope<'a> {
     pub secret_id: &'a str,
     pub min_rev: u64,

@@ -201,6 +201,38 @@ assert_the_project_upgrades_in_place() {
 	printf '  the old project took a new push, and secrets/ arrived at mode 600\n'
 }
 
+# ── a secret the old client addressed by NAME, read by the current one ────────
+#
+# The old client keyed a secret by the path the user typed, so this row really is
+# `compat/legacy` in the server's database — the leak the current client closes. Reading it
+# therefore exercises the fallback: try the handle, miss, read the plaintext path, and say on
+# stderr that the name is still visible there. Silence would make the leak permanent and
+# invisible, which is the failure this asserts against.
+write_a_legacy_secret() {
+	old_client 'cd /state && printf "legacy-sentinel-29" | $B vault set compat/legacy' \
+		>"$WORK/old-set.log" 2>&1 ||
+		{ cat "$WORK/old-set.log"; fail "the $OLD_REF client could not store a secret"; }
+	grep -q 'compat/legacy' "$WORK/old-set.log" ||
+		{ cat "$WORK/old-set.log"; fail "the old client reported no store"; }
+	printf '  %s stored a secret under its plaintext name\n' "$OLD_REF"
+}
+
+read_the_legacy_secret() {
+	new_client 'cd /state && $B vault get compat/legacy' \
+		>"$WORK/new-get.log" 2>"$WORK/new-get.err" ||
+		{ cat "$WORK/new-get.log" "$WORK/new-get.err"; fail "the current client could not read \
+the secret the old client wrote"; }
+	[ "$(cat "$WORK/new-get.log")" = "legacy-sentinel-29" ] ||
+		fail "the legacy secret came back as something else: $(cat "$WORK/new-get.log")"
+	grep -qi 'plaintext name' "$WORK/new-get.err" ||
+		fail "the fallback read did not warn that the name is still stored in the clear"
+	new_client 'cd /state && $B vault ls compat/' >"$WORK/new-ls.log" 2>&1 ||
+		{ cat "$WORK/new-ls.log"; fail "the current client could not list the legacy secret"; }
+	grep -q 'compat/legacy' "$WORK/new-ls.log" ||
+		{ cat "$WORK/new-ls.log"; fail "the legacy secret did not list under the name it has" ; }
+	printf '  the current client read and listed it, and said the name is still visible\n'
+}
+
 main() {
 	command -v docker >/dev/null 2>&1 || skip "docker not installed"
 	command -v git >/dev/null 2>&1 || skip "git not installed"
@@ -218,7 +250,10 @@ main() {
 	wipe_the_working_copy
 	pull_with_the_current_client
 	assert_the_project_upgrades_in_place
-	printf 'PASS v29: a project written by the %s client is read byte-exactly by HEAD, and upgrades\n' "$OLD_REF"
+	write_a_legacy_secret
+	read_the_legacy_secret
+	printf 'PASS v29: a project written by the %s client is read byte-exactly by HEAD, upgrades,\n' "$OLD_REF"
+	printf '          and a secret it stored by name is still readable (with a warning)\n'
 }
 
 main "$@"

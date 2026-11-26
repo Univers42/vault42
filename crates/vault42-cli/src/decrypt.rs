@@ -15,12 +15,13 @@
 //! envelope (so a malicious server cannot substitute a different author), then opens
 //! the envelope with the caller's X25519 secret under the expected read scope.
 
-use vault42_core::{open, AuthorPublicKey, Envelope, Identity, ReadScope};
+use vault42_core::{open_at_version, AuthorPublicKey, Envelope, Identity, ReadScope};
 use vault42_proto::vault::v1::GetResponse;
 use zeroize::Zeroizing;
 
 /// Verify authorship and decrypt `resp` for `identity`, binding the read to
-/// `expected_secret_id` and `min_rev` (anti-substitution / anti-rollback).
+/// `expected_secret_id` and `min_rev` (anti-substitution / anti-rollback), and requiring
+/// the server's version label to agree with the revision inside the signed envelope.
 pub fn open_envelope(
     identity: &Identity,
     resp: &GetResponse,
@@ -33,7 +34,13 @@ pub fn open_envelope(
         secret_id: expected_secret_id,
         min_rev,
     };
-    Ok(open(&env, identity.encryption_secret(), &author, &scope)?)
+    Ok(open_at_version(
+        &env,
+        identity.encryption_secret(),
+        &author,
+        &scope,
+        resp.version,
+    )?)
 }
 
 /// Reconstruct the author public key the server returned, rejecting it unless its
